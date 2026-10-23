@@ -1,0 +1,9 @@
+.*
+!.github
+!.dockerignore
+!.envrc
+!.gitignore
+/target
+!.yamllint.yaml
+/dev/media/
+/dev/media-open/

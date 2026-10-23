@@ -1,0 +1,107 @@
+# Libraries: naming and metadata
+
+Ferrocine reads the layouts Jellyfin, Kodi and Plex use. Libraries are
+mounted read-only: nothing is written there.
+
+## Movies
+
+```
+movies/
+├── The Matrix (1999)/
+│   ├── The Matrix (1999).mkv
+│   ├── The Matrix (1999).en.srt        subtitle (language en)
+│   ├── The Matrix (1999).fr.forced.srt forced French subtitle
+│   ├── movie.nfo                       Kodi metadata (or "The Matrix (1999).nfo")
+│   ├── poster.jpg                      also folder, cover, "<name>-poster"
+│   └── fanart.jpg                      also backdrop, background, "<name>-fanart"
+├── Alien (1979) {tmdb-348}/Alien.mkv   provider id in the name
+└── Heat.1995.1080p.BluRay.x264.mkv     release names work too
+```
+
+- The title ends at the year when there is one, else at the first release
+  token (`1080p`, `BluRay`, `x265`…).
+- A directory holding a single movie names it when it has a year or a
+  provider id (`{tmdb-…}`, `[imdbid-tt…]`, `{tvdb-…}`). `poster.jpg`,
+  `fanart.jpg` and `movie.nfo` apply when the directory holds a single movie;
+  otherwise use `<name>-poster.jpg` and `<name>.nfo`.
+- Ignored: hidden files, `Extras`, `Featurettes`, `Behind The Scenes`,
+  `Deleted Scenes`, `Trailers`, `Samples`… directories, and files ending in
+  `-trailer` or `-sample`.
+
+## Shows
+
+```
+shows/
+└── Breaking Bad (2008)/
+    ├── tvshow.nfo
+    ├── poster.jpg, fanart.jpg
+    ├── season01-poster.jpg              or poster.jpg inside "Season 01"
+    ├── Season 01/
+    │   ├── Breaking Bad - S01E01 - Pilot.mkv
+    │   ├── Breaking Bad - S01E01 - Pilot.nfo
+    │   └── Breaking Bad - S01E01 - Pilot-thumb.jpg
+    ├── Season 02/
+    │   └── 01 - Seven Thirty-Seven.mkv  number from the name, season from the directory
+    └── Specials/
+        └── S00E01 - Making of.mkv       season 0
+```
+
+- A series is a top-level directory. Episodes are numbered `S01E02`, `s1e2`,
+  `1x02`, or by a leading number inside a `Season N` (also `S2`, `Saison 3`,
+  `Staffel 4`) directory. Multi-episode files count as their first episode.
+- Episode files at the library root are grouped by the name before `SxxEyy`.
+- The episode title is what follows the number, or "Episode N".
+- `episode_order: dvd` or `absolute` (with `metadata.tvdb`) numbers episodes
+  as TheTVDB's DVD or absolute order instead of the broadcast order.
+
+### Anime
+
+With `anime: true`, release-group names are understood too: a series
+directory holding `[SubsPlease] Sousou no Frieren - 01 (1080p).mkv` or
+`Frieren Ep 12.mkv` gets episode 1 or 12 of season 1 (brackets, braces and
+parentheses are ignored; a four-digit year is not an episode). AniList names
+and describes the series, AniDB (when configured) numbers and names the
+episodes.
+
+## Supported files
+
+- **Video:** mkv, mp4, m4v, avi, mov, wmv, ts, m2ts, mts, webm, mpg, mpeg,
+  flv, ogv, 3gp, vob, divx.
+- **Subtitles:** embedded text tracks (SubRip, ASS/SSA, mov_text, WebVTT),
+  and srt, vtt, ass, ssa files next to the video. Bitmap subtitles (PGS,
+  VobSub) are listed but cannot be shown yet.
+- **Images:** jpg, jpeg, png, webp.
+
+## Where metadata comes from
+
+1. **The `.nfo` file** wins: title, original and sort titles, year, dates,
+   plot, tagline, rating, certification, genres, studios, people, provider ids.
+2. **Providers** fill the rest, including artwork, season and episode
+   details, in this order: AniList and AniDB (anime libraries), TheTVDB
+   (first when `episode_order` is not `aired`), TMDB, TheTVDB; then OMDb
+   (ratings) and fanart.tv (logos, backdrops). They are searched by provider
+   id first (from the name or the `.nfo`, e.g. `{tmdb-603}`, `[imdbid-tt0133093]`,
+   `{tvdb-81189}`), then by title, accepting only a result released within a
+   year of the year in the name. A title from the file name is replaced, by
+   the original title when the work's original language is in
+   `prefer_original_title` (globally under `metadata`, or per library).
+3. **The file name** gives the title and year when nothing else does; ffprobe
+   gives the runtime.
+
+Artwork: local files (`poster`, `fanart`, `clearlogo`/`logo`,
+`<name>-clearlogo`…), then the providers', then a frame of the video (movies
+and episodes with no image at all). Everything is resized and stored in the
+database.
+
+Subtitles downloaded from OpenSubtitles.com (on demand from the player, or
+automatically for `subtitles.languages`) are stored in the database too.
+
+## Scans
+
+Libraries are scanned at start, every `scanner.interval` (6 h), and when an
+administrator asks (`POST /api/v1/libraries/{id}/scan`, or the UI's admin
+page). Unchanged files are not probed again. If a library directory is
+missing or unreadable (an unmounted share), the scan keeps every item.
+
+A wrong match is fixed by renaming with a provider id (`{tmdb-…}`) or by an
+`.nfo`, then "Refresh metadata" on the item (administrators).

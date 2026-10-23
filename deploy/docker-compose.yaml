@@ -1,0 +1,70 @@
+# Ferrocine with its UI and PostgreSQL. Start with:
+#   POSTGRES_PASSWORD=… OIDC_CLIENT_SECRET=… MEDIA_DIR=/srv/media docker compose -f deploy/docker-compose.yaml up -d
+# Edit deploy/config/*.yaml first (public URL, provider, libraries); apply changes
+# with `docker kill -s HUP ferrocine` (see docs/deployment.md).
+# The UI on port 8080 is the only entry point: it serves the web app and proxies
+# /api and /auth to Ferrocine, so both share one origin. Put TLS in front of it.
+
+services:
+  ui:
+    image: ghcr.io/sebastka/ferrocine-ui:edge
+    container_name: ferrocine-ui
+    restart: unless-stopped
+    environment:
+      FERROCINE_UPSTREAM: http://ferrocine:8096
+    ports:
+      - "8080:8080"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  ferrocine:
+    image: ghcr.io/sebastka/ferrocine:edge
+    container_name: ferrocine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      FERROCINE_LOG_FORMAT: json
+    volumes:
+      - ./config:/etc/ferrocine:ro
+      # Libraries are mounted read-only: Ferrocine never writes there.
+      - ${MEDIA_DIR:?set MEDIA_DIR}:/media:ro
+      # HLS segments; ephemeral, a few GB at most.
+      - transcodes:/transcodes
+    # Hardware transcoding (Intel or AMD): the render node and the group that
+    # owns it on the host (`getent group render`). Remove both for software.
+    # NVIDIA: see docs/deployment.md.
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:?set RENDER_GID to the render group id (getent group render)}"
+    # Unprivileged: no capability, read-only root, no privilege gain.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferrocine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ferrocine
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ferrocine"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres:
+  transcodes:

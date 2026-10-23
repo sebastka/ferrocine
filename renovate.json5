@@ -1,0 +1,124 @@
+// Renovate configuration: https://docs.renovatebot.com/configuration-options/
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    // Keep GitHub Actions pinned by commit SHA, with the version as comment.
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  timezone: "Europe/Paris",
+  // Nightly, for updates and for merging them.
+  schedule: ["* 0-5 * * *"],
+  automergeSchedule: ["* 0-5 * * *"],
+  prHourlyLimit: 0,
+  prConcurrentLimit: 10,
+
+  // Everything but majors merges itself once the required checks pass
+  // (GitHub auto-merge, squash, so commits stay signed and linear).
+  automerge: true,
+  platformAutomerge: true,
+  automergeStrategy: "squash",
+  // Let fresh releases settle before they are proposed (yanks, takedowns).
+  minimumReleaseAge: "3 days",
+
+  semanticCommits: "enabled",
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["* 0-5 * * *"],
+  },
+  vulnerabilityAlerts: {
+    labels: ["security"],
+    // Security fixes are proposed at once, not at night.
+    schedule: ["at any time"],
+    minimumReleaseAge: null,
+  },
+
+
+  packageRules: [
+    {
+      description: "Majors are reviewed by hand.",
+      matchUpdateTypes: ["major"],
+      automerge: false,
+      labels: ["major"],
+    },
+    {
+      description: "In Cargo, a 0.x minor bump (0.8 -> 0.9) is semver-incompatible: treat it as a major.",
+      matchManagers: ["cargo"],
+      matchCurrentVersion: "<1.0.0",
+      matchUpdateTypes: ["minor"],
+      automerge: false,
+      labels: ["major"],
+    },
+    {
+      description: "CI test databases follow the latest releases, majors included (CI must still pass). Not the compose examples: a real PostgreSQL major needs a data migration.",
+      matchManagers: ["github-actions"],
+      matchDepTypes: ["service"],
+      matchUpdateTypes: ["major"],
+      automerge: true,
+    },
+    {
+      description: "Raise Cargo.toml requirements, not only Cargo.lock.",
+      matchManagers: ["cargo"],
+      rangeStrategy: "bump",
+    },
+    {
+      groupName: "Rust crates (non-major)",
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["minor", "patch"],
+      matchCurrentVersion: ">=1.0.0",
+    },
+    {
+      groupName: "Rust crates (0.x patch)",
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["patch"],
+      matchCurrentVersion: "<1.0.0",
+    },
+    {
+      groupName: "GitHub Actions",
+      matchManagers: ["github-actions"],
+      matchDepTypes: ["action"],
+      matchUpdateTypes: ["minor", "patch", "digest", "pin", "pinDigest"],
+    },
+    {
+      description: "ffmpeg is what the image is for: its updates are reviewed by hand (rebuilt drivers, new filters).",
+      matchPackageNames: ["jellyfin-ffmpeg8"],
+      automerge: false,
+      labels: ["ffmpeg"],
+    },
+    {
+      groupName: "Container images",
+      matchDatasources: ["docker"],
+      matchUpdateTypes: ["minor", "patch", "digest", "pin", "pinDigest"],
+    },
+    {
+      description: "The project's own images in the deployment examples track `edge` on purpose.",
+      matchPackageNames: ["ghcr.io/sebastka/ferrocine", "ghcr.io/sebastka/ferrocine-ui"],
+      enabled: false,
+    },
+  ],
+
+  customManagers: [
+    {
+      description: "Debian packages pinned in the Dockerfile (`# renovate:` comment above an ARG), e.g. jellyfin-ffmpeg8.",
+      customType: "regex",
+      managerFilePatterns: ["/(^|/)Dockerfile$/"],
+      matchStrings: ["# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) registryUrl=(?<registryUrl>\\S+)\\nARG \\w+=(?<currentValue>\\S+)"],
+      versioningTemplate: "deb",
+    },
+    {
+      description: "Images mounted in RUN steps (`--mount=type=bind,from=…`), which the Dockerfile manager does not read.",
+      customType: "regex",
+      managerFilePatterns: ["/(^|/)Dockerfile$/"],
+      matchStrings: ["--mount=type=bind,from=(?<depName>[^:@,\\s]+):(?<currentValue>[^@,\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      datasourceTemplate: "docker",
+    },
+    {
+      description: "yamllint version run by CI through pipx.",
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/.+\\.yaml$/"],
+      matchStrings: ["pipx run (?<depName>yamllint)==(?<currentValue>[\\d.]+)"],
+      datasourceTemplate: "pypi",
+    },
+  ],
+}

@@ -1,0 +1,19 @@
+# Development configuration, used by dev/compose.yaml.
+server:
+  public_url: http://localhost:${UI_PORT:-18080}
+
+database:
+  url: postgres://ferrocine:${POSTGRES_PASSWORD:-ferrocine}@postgres/ferrocine
+
+auth:
+  oidc:
+    # The mock provider; any user name signs in, with the claims of
+    # dev/mock-oidc.json (administrator).
+    issuer: http://localhost:${MOCK_OIDC_PORT:-18090}/default
+    client_id: ferrocine
+    client_secret: dev-secret
+    users: [media]
+    admins: [media-admin]
+
+transcoding:
+  temp_dir: /tmp/ferrocine

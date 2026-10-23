@@ -1,0 +1,175 @@
+# Every setting, with its default. Only `server.public_url`, `database.url`,
+# `auth.oidc` (issuer, client_id) and the libraries are required.
+#
+# The configuration path may be a file or a directory of *.yaml files merged
+# in name order; a section may appear in one file only, while `libraries`
+# lists are concatenated. `${VAR}`, `${VAR:-default}` and `${file:/path}` are
+# substituted in values; `$$` is a literal `$`. Unknown keys are errors.
+# A provider whose key is empty (e.g. `${TVDB_API_KEY:-}` unset) is off.
+#
+# Reload with SIGHUP or POST /api/v1/reload. `server` (except metrics_token),
+# `database` and `transcoding` apply at the next restart; everything else at once.
+
+server:
+  listen: 0.0.0.0:8096
+  # The URL users open (the UI's origin): OIDC redirect URI, CSRF origin check,
+  # and `Secure` / `__Host-` cookies when it is https://.
+  public_url: https://media.example.com
+  # Serve a built UI from this directory as well (optional; the UI image is the
+  # usual way, see docs/deployment.md).
+  # web_dir: /usr/share/ferrocine-ui
+  # Bearer token required by /metrics; open when unset.
+  # metrics_token: ${file:/run/secrets/metrics_token}
+  # Tokio worker threads; 0 = one per CPU.
+  worker_threads: 0
+
+database:
+  # postgres://, mariadb:// or mysql:// (MariaDB is the tested target).
+  url: postgres://ferrocine:${POSTGRES_PASSWORD}@postgres/ferrocine
+  max_connections: 10
+  connect_timeout: 10s
+
+auth:
+  oidc:
+    # https://, or http:// on localhost only.
+    issuer: https://id.example.com/realms/home
+    client_id: ferrocine
+    # Omit for a public client (PKCE alone).
+    client_secret: ${OIDC_CLIENT_SECRET}
+    scopes: [openid, profile, email]
+    # Dotted path of the claim listing the user's groups or roles, read from
+    # the ID token, else from userinfo. Keycloak realm roles: realm_access.roles.
+    groups_claim: groups
+    # Values of that claim allowed to sign in; empty = anyone the provider accepts.
+    users: []
+    # Values granting administration (scans, refreshes, system information).
+    admins: []
+    # Clock skew tolerated when checking the ID token.
+    leeway: 60s
+  # A session ends after this long unused…
+  session_idle: 14d
+  # …and this long after sign-in in any case.
+  session_lifetime: 90d
+
+transcoding:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  # auto (VA-API, then QSV, then NVENC, each proven by a test encode), none,
+  # vaapi, qsv or nvenc.
+  hw_accel: auto
+  # DRM render node for VA-API and QSV.
+  device: /dev/dri/renderD128
+  # HLS segments of running sessions; ephemeral (default: <system temp>/ferrocine).
+  temp_dir: /transcodes
+  # Concurrent remux and transcode sessions; more get 503.
+  max_sessions: 8
+  # Transcoded video is never taller than this.
+  max_height: 2160
+  # Tone-map HDR sources (HDR10, HLG, Dolby Vision) to SDR when transcoding
+  # them, so that their colours do not look washed out.
+  tone_mapping: true
+  # HLS segment duration, 2 to 10 seconds.
+  segment_seconds: 4
+  # libx264 preset when transcoding in software.
+  x264_preset: veryfast
+
+metadata:
+  # Optional. A TMDB v4 "API read access token" or a v3 API key.
+  tmdb:
+    api_key: ${TMDB_API_KEY}
+    language: en-US
+    # api_url: https://api.themoviedb.org/3
+    # image_url: https://image.tmdb.org/t/p
+  # Optional. TheTVDB v4: series and episodes, and the only source of DVD and
+  # absolute episode orders (see `episode_order` below).
+  tvdb:
+    api_key: ${TVDB_API_KEY}
+    # pin: ${TVDB_PIN}          # subscriber PIN, for user-supported keys
+    # api_url: https://api4.thetvdb.com/v4
+  # Optional. OMDb: IMDb, Rotten Tomatoes and Metacritic ratings, by IMDb id.
+  omdb:
+    api_key: ${OMDB_API_KEY}
+    # api_url: https://www.omdbapi.com
+  # Optional. fanart.tv: logos, textless backdrops, extra posters.
+  fanart:
+    api_key: ${FANART_API_KEY}
+    # client_key: ${FANART_CLIENT_KEY}   # personal key: newer images sooner
+    # api_url: https://webservice.fanart.tv/v3
+  # AniList (no key) for libraries with `anime: true`.
+  anilist:
+    enabled: true
+    title: english             # english (else romaji), romaji or native
+    # api_url: https://graphql.anilist.co
+  # Optional. AniDB for anime episodes. Register a client (HTTP API) at
+  # https://anidb.net/software/add; requests are paced to one per 2.5 s.
+  anidb:
+    client: myclient
+    client_version: 1
+    # api_url: http://api.anidb.net:9001/httpapi
+    # titles_url: https://anidb.net/api/anime-titles.xml.gz
+    # image_url: https://cdn-eu.anidb.net/images/main
+  # Languages (ISO 639-1) whose works keep their original title rather than
+  # the library language's: [ja, ko] shows "千と千尋の神隠し", not "Spirited
+  # Away". ["*"] for every language. Changes apply on reload, without
+  # fetching metadata again; titles from .nfo files are never switched.
+  prefer_original_title: []
+  # Read Kodi-style .nfo files next to the media; they win over TMDB.
+  nfo: true
+  # Use poster.jpg, fanart.jpg, <name>-poster.jpg… next to the media.
+  local_artwork: true
+  # Extract a frame when a movie or episode has no image at all.
+  extract_thumbnails: true
+  # Stored width of posters and thumbnails; backdrops get twice that (at most 1920).
+  poster_width: 600
+  jpeg_quality: 85
+
+scanner:
+  # Scan every library this often; 0 disables periodic scans.
+  interval: 6h
+  on_start: true
+  # Concurrent ffprobe processes (and items processed) per scan.
+  probe_concurrency: 4
+  # Items no provider found (and automatic subtitle searches that found
+  # nothing) are tried again after this long.
+  retry_unmatched: 7d
+
+subtitles:
+  # Optional. OpenSubtitles.com: an API key (register a consumer at
+  # https://www.opensubtitles.com/consumers) and an account, since the API
+  # only lets signed-in users download.
+  opensubtitles:
+    api_key: ${OPENSUBTITLES_API_KEY}
+    username: ${OPENSUBTITLES_USERNAME}
+    password: ${OPENSUBTITLES_PASSWORD}
+    # api_url: https://api.opensubtitles.com/api/v1
+  # Fetched automatically after each scan for movies and episodes that have
+  # no subtitle in these languages (ISO 639-1). Empty: on demand only.
+  languages: []
+  # At most this many downloads per scan (the account's daily quota is small).
+  max_downloads_per_scan: 20
+  # Prefer subtitles for the deaf and hard of hearing.
+  hearing_impaired: false
+  # No subtitle in a language that is already the first audio track's.
+  skip_when_audio_matches: true
+
+libraries:
+  - id: movies               # letters, digits, `_-.`; keys every item
+    name: Movies
+    kind: movies             # movies or shows
+    paths: [/media/movies]   # absolute; mounted read-only
+    access: []               # groups allowed to see it; empty = everyone
+    # language: fr-FR        # metadata language for this library
+  - id: shows
+    name: TV shows
+    kind: shows
+    paths: [/media/shows]
+    # aired (TMDB), dvd or absolute (both need metadata.tvdb)
+    episode_order: aired
+  - id: anime
+    name: Anime
+    kind: shows
+    paths: [/media/anime]
+    # AniList (and AniDB when configured) first; absolute episode numbers
+    # in file names ("[Group] Title - 12 (1080p).mkv") are understood.
+    anime: true
+    prefer_original_title: ["*"]   # overrides metadata.prefer_original_title

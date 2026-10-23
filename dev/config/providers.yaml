@@ -1,0 +1,25 @@
+# Metadata and subtitle providers, keyed from the environment: put the keys
+# in the repository's .env (read by compose). A provider whose key is empty
+# or unset is off.
+metadata:
+  tmdb:
+    api_key: ${TMDB_API_KEY:-}
+  tvdb:
+    api_key: ${TVDB_API_KEY:-}
+    pin: ${TVDB_PIN:-}
+  omdb:
+    api_key: ${OMDB_API_KEY:-}
+  fanart:
+    api_key: ${FANART_API_KEY:-}
+    client_key: ${FANART_CLIENT_KEY:-}
+  anidb:
+    client: ${ANIDB_CLIENT:-}
+    client_version: ${ANIDB_CLIENT_VERSION:-1}
+
+subtitles:
+  opensubtitles:
+    api_key: ${OPENSUBTITLES_API_KEY:-}
+    username: ${OPENSUBTITLES_USERNAME:-}
+    password: ${OPENSUBTITLES_PASSWORD:-}
+  # Fetched automatically after each scan (when OpenSubtitles is keyed).
+  languages: [fr]

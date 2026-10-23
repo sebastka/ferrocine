@@ -1,0 +1,134 @@
+name: CI
+
+'on':
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same toolchain as the Docker Hardened build image (and rust-version).
+  RUST_TOOLCHAIN: "1.96"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: fc
+          POSTGRES_PASSWORD: fc
+          POSTGRES_DB: fc
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fc" --health-interval 5s --health-timeout 5s --health-retries 20
+      mariadb:
+        image: mariadb:13.0
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_USER: fc
+          MARIADB_PASSWORD: fc
+          MARIADB_DATABASE: fc
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      FERROCINE_TEST_POSTGRES: postgres://fc:fc@127.0.0.1:5432/fc
+      FERROCINE_TEST_MARIADB: mariadb://fc:fc@127.0.0.1:3306/fc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The end-to-end test generates media and transcodes it (in software).
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends ffmpeg
+      - run: cargo test --locked --all-features
+      - name: Validate the example configurations
+        env:
+          POSTGRES_PASSWORD: x
+          OIDC_CLIENT_SECRET: x
+          TMDB_API_KEY: x
+        run: |
+          cargo run --locked --quiet -- validate --config examples/config.yaml
+          cargo run --locked --quiet -- validate --config deploy/config
+          cargo run --locked --quiet -- validate --config dev/config
+
+  yamllint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx run yamllint==1.38.0 --strict .
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources
+
+  docker:
+    runs-on: ubuntu-latest
+    # Pulling Docker Hardened Images needs credentials, which forks do not get.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: dhi.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ferrocine:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the image
+        run: |
+          docker run --rm ferrocine:ci --version
+          docker run --rm -e POSTGRES_PASSWORD=x -e OIDC_CLIENT_SECRET=x -e TMDB_API_KEY=x \
+            -v "$PWD/examples/config.yaml:/etc/ferrocine/config.yaml:ro" ferrocine:ci validate
+          docker run --rm --entrypoint ffmpeg ferrocine:ci -hide_banner -encoders | grep -E 'h264_vaapi|h264_qsv|libx264'

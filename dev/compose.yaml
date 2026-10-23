@@ -1,0 +1,91 @@
+# Development stack: Ferrocine, its UI, PostgreSQL and a mock OpenID Connect
+# provider (any user name signs in, as an administrator).
+#
+#   docker compose -f dev/compose.yaml up -d --build --wait
+#   open http://localhost:18080
+#
+# MEDIA_DIR (default dev/media) holds `movies/` and `shows/`, mounted read-only.
+# Provider keys come from the repository's .env, when present (see
+# config/providers.yaml): TMDB_API_KEY, TVDB_API_KEY, TVDB_PIN, OMDB_API_KEY,
+# FANART_API_KEY, FANART_CLIENT_KEY, ANIDB_CLIENT, ANIDB_CLIENT_VERSION,
+# OPENSUBTITLES_API_KEY, OPENSUBTITLES_USERNAME, OPENSUBTITLES_PASSWORD.
+# The provider's issuer must be the same URL for the browser and for Ferrocine,
+# and Ferrocine accepts http:// issuers on localhost only. So Ferrocine and the
+# UI run in the network namespace of the mock provider, whose ports are
+# published as they are.
+# Images are pinned by digest (multi-arch index); Renovate keeps them current.
+services:
+  mock-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:6.1.2@sha256:94d4ebf0fe793a727b3468b846e92ccbcd513f3b359a095802d817934d762e01
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: ${MOCK_OIDC_PORT:-18090}
+      JSON_CONFIG_PATH: /config/mock-oidc.json
+    volumes:
+      - ./mock-oidc.json:/config/mock-oidc.json:ro
+    ports:
+      - '127.0.0.1:${MOCK_OIDC_PORT:-18090}:${MOCK_OIDC_PORT:-18090}'
+      # The UI, and the core directly.
+      - '127.0.0.1:${UI_PORT:-18080}:8080'
+      - '127.0.0.1:${CORE_PORT:-18096}:8096'
+
+  postgres:
+    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferrocine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ferrocine}
+      POSTGRES_DB: ferrocine
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'ferrocine']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ferrocine:
+    build: ..
+    image: ferrocine:dev
+    restart: unless-stopped
+    network_mode: service:mock-oidc
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      UI_PORT: ${UI_PORT:-18080}
+      MOCK_OIDC_PORT: ${MOCK_OIDC_PORT:-18090}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ferrocine}
+      FERROCINE_LOG: ${FERROCINE_LOG:-info}
+    env_file:
+      - path: ../.env
+        required: false
+    volumes:
+      - ./config:/etc/ferrocine:ro
+      - ${MEDIA_DIR:-./media}:/media:ro
+    # Hardware acceleration: the render node, and its group on the host
+    # (`getent group render`).
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - '${RENDER_GID:-303}'
+    read_only: true
+    tmpfs:
+      - /tmp:size=4g
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+  ui:
+    image: ${FERROCINE_UI_IMAGE:-ghcr.io/sebastka/ferrocine-ui:edge}
+    restart: unless-stopped
+    network_mode: service:mock-oidc
+    environment:
+      FERROCINE_UPSTREAM: http://127.0.0.1:8096
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+
+volumes:
+  postgres:

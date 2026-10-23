@@ -1,0 +1,128 @@
+# Minimal Kubernetes deployment of Ferrocine and its UI. Provide yourself:
+# - the `ferrocine` Secret (POSTGRES_PASSWORD, OIDC_CLIENT_SECRET, optionally TMDB_API_KEY);
+# - the `ferrocine-config` ConfigMap (one or more *.yaml files), e.g. with
+#   kustomize's configMapGenerator from deploy/config/;
+# - the `media` PersistentVolumeClaim holding the libraries (mounted read-only);
+# - an Ingress (with TLS) to the `ferrocine-ui` Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrocine
+  labels: { app.kubernetes.io/name: ferrocine }
+spec:
+  # HLS sessions live in memory: one replica (see DECISIONS.md).
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: ferrocine }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ferrocine }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The group owning /dev/dri/renderD* on the node (often 109 or 303).
+        supplementalGroups: [303]
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ferrocine
+          image: ghcr.io/sebastka/ferrocine:edge
+          args: [run]
+          env:
+            - { name: FERROCINE_LOG_FORMAT, value: json }
+          envFrom:
+            - secretRef: { name: ferrocine }
+          ports:
+            - { name: http, containerPort: 8096 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:
+              memory: 2Gi
+              # With the Intel GPU device plugin; AMD: amd.com/gpu: 1.
+              gpu.intel.com/i915: 1
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          volumeMounts:
+            - { name: config, mountPath: /etc/ferrocine, readOnly: true }
+            - { name: media, mountPath: /media, readOnly: true }
+            - { name: transcodes, mountPath: /transcodes }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap: { name: ferrocine-config }
+        - name: media
+          persistentVolumeClaim: { claimName: media, readOnly: true }
+        - name: transcodes
+          emptyDir: { sizeLimit: 20Gi }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrocine
+spec:
+  selector: { app.kubernetes.io/name: ferrocine }
+  ports:
+    - { name: http, port: 8096, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrocine-ui
+  labels: { app.kubernetes.io/name: ferrocine-ui }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ferrocine-ui }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ferrocine-ui }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ui
+          image: ghcr.io/sebastka/ferrocine-ui:edge
+          env:
+            - { name: FERROCINE_UPSTREAM, value: "http://ferrocine:8096" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          livenessProbe:
+            httpGet: { path: /ui-healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /ui-healthz, port: http }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrocine-ui
+spec:
+  selector: { app.kubernetes.io/name: ferrocine-ui }
+  ports:
+    - { name: http, port: 80, targetPort: http }

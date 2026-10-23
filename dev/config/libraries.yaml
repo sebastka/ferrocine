@@ -1,0 +1,9 @@
+libraries:
+  - id: movies
+    name: Movies
+    kind: movies
+    paths: [/media/movies]
+  - id: shows
+    name: Shows
+    kind: shows
+    paths: [/media/shows]

@@ -1,0 +1,20 @@
+{
+  "interactiveLogin": true,
+  "tokenCallbacks": [
+    {
+      "issuerId": "default",
+      "tokenExpiry": 300,
+      "requestMappings": [
+        {
+          "requestParam": "grant_type",
+          "match": "*",
+          "claims": {
+            "aud": ["ferrocine"],
+            "azp": "ferrocine",
+            "groups": ["media", "media-admin"]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Libraries: one per kind of content. Paths are inside the container (MEDIA_DIR is /media).
+libraries:
+  - id: movies
+    name: Movies
+    kind: movies
+    paths: [/media/movies]
+  - id: shows
+    name: TV shows
+    kind: shows
+    paths: [/media/shows]
+  - id: kids
+    name: Kids
+    kind: movies
+    paths: [/media/kids]
+    # Only these groups (and administrators) see this library.
+    access: [kids, parents]

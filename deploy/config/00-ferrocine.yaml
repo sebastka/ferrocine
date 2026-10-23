@@ -1,0 +1,20 @@
+# Server, database, sign-in and transcoding. Secrets come from the environment
+# (${VAR}) or from files (${file:/run/secrets/…}).
+server:
+  public_url: https://media.example.com
+
+database:
+  url: postgres://ferrocine:${POSTGRES_PASSWORD}@postgres/ferrocine
+
+auth:
+  oidc:
+    issuer: https://id.example.com/realms/home
+    client_id: ferrocine
+    client_secret: ${OIDC_CLIENT_SECRET}
+    groups_claim: groups
+    # Who may sign in, and who administers. Empty `users` = anyone the provider accepts.
+    users: [media]
+    admins: [media-admin]
+
+transcoding:
+  temp_dir: /transcodes

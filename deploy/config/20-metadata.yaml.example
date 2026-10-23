@@ -1,0 +1,5 @@
+# Rename to 20-metadata.yaml to fetch metadata and artwork from TMDB.
+metadata:
+  tmdb:
+    api_key: ${TMDB_API_KEY}
+    language: en-US
