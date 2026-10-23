@@ -29,7 +29,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ferrocine
-          image: ghcr.io/sebastka/ferrocine:2026-10-23
+          image: ghcr.io/sebastka/ferrocine:2026-10-23.1
           args: [run]
           env:
             - { name: FERROCINE_LOG_FORMAT, value: json }
@@ -96,7 +96,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ui
-          image: ghcr.io/sebastka/ferrocine-ui:2026-10-23
+          image: ghcr.io/sebastka/ferrocine-ui:2026-10-23.1
           env:
             - { name: FERROCINE_UPSTREAM, value: "http://ferrocine:8096" }
           ports:
