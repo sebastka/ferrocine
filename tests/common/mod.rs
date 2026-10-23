@@ -129,6 +129,10 @@ pub fn media() -> Media {
         &matrix.join("The Matrix (1999).en.srt"),
         "1\n00:00:01,000 --> 00:00:03,000\nWake up, Neo.\n\n2\n00:00:08,000 --> 00:00:10,000\nFollow the white rabbit.\n",
     );
+    // A show misplaced in the movie library, hidden by an empty .ignore (Jellyfin's convention).
+    let stray = movies.join("Stray Show");
+    video(&stray.join("Stray Show - S01E01.mkv"), 1, &h264_aac);
+    write(&stray.join(".ignore"), "");
     // Remux: H.264 in Matroska, release name at the root, with an embedded subtitle.
     let alien = movies.join("Alien.1979.1080p.BluRay.x264.mkv");
     let srt = root.join("alien.srt");

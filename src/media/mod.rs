@@ -2,6 +2,7 @@
 //! metadata (nfo), artwork, and the library scanner tying them together.
 
 pub mod artwork;
+pub mod dotignore;
 pub mod naming;
 pub mod nfo;
 pub mod probe;

@@ -28,6 +28,26 @@ movies/
   `Deleted Scenes`, `Trailers`, `Samples`… directories, and files ending in
   `-trailer` or `-sample`.
 
+## `.ignore` files
+
+As in Jellyfin, a `.ignore` file hides content from a library, e.g. a show
+that sits in a movie directory:
+
+- **Empty** (or blank): the directory holding it and everything below are
+  skipped.
+- **With patterns**: one gitignore pattern per line, matched without regard to
+  case against paths relative to that directory: `Samples/` (directories
+  only), `*.iso`, `SPs` (any file or directory of that name), `!keep.mkv` (an
+  exception), `# comment`. Invalid patterns are skipped; a file with no valid
+  pattern hides everything, like an empty one.
+- **Nearest wins:** only the closest `.ignore` at or above a directory (above
+  a file) applies, up to the library path; one in a subdirectory replaces its
+  parents' rules instead of adding to them.
+
+Items already scanned disappear at the next scan. Libraries stay read-only:
+the files are written by you, never by Ferrocine. An unreadable `.ignore`
+stops that scan from removing anything.
+
 ## Shows
 
 ```
