@@ -16,6 +16,7 @@ use anyhow::{Context, bail};
 use futures_util::{StreamExt, stream};
 
 use super::artwork::{self, find_image};
+use super::dotignore::DotIgnore;
 use super::naming::{self, ProviderIds};
 use super::nfo::{self, Nfo};
 use super::probe::{self, EXTERNAL_SUBTITLE_BASE, MediaInfo, SubtitleStream};
@@ -146,11 +147,21 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
         if !meta.is_dir() {
             bail!("library path {} is not a directory", root.display());
         }
+        let mut dot_ignore = DotIgnore::new(root);
+        let mut ignored = 0usize;
         let entries = walkdir::WalkDir::new(root)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
-                e.depth() == 0 || !(e.file_type().is_dir() && naming::is_skipped_dir(&e.file_name().to_string_lossy()))
+                let is_dir = e.file_type().is_dir();
+                if e.depth() > 0 && is_dir && naming::is_skipped_dir(&e.file_name().to_string_lossy()) {
+                    return false;
+                }
+                if dot_ignore.is_ignored(e.path(), is_dir) {
+                    ignored += 1;
+                    return false;
+                }
+                true
             });
         for entry in entries {
             let entry = match entry {
@@ -183,6 +194,12 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
                 });
             }
             out.dirs.entry(dir).or_default().push(name);
+        }
+        if dot_ignore.unreadable {
+            out.incomplete = true;
+        }
+        if ignored > 0 {
+            tracing::info!(path = %root.display(), entries = ignored, "skipped by .ignore files");
         }
     }
     out.files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1192,7 +1209,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn walk_skips_extras_and_hidden_files() {
+    fn walk_skips_extras_hidden_and_dot_ignored_files() {
         let root = std::env::temp_dir().join(format!("fc-walk-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for p in [
@@ -1203,10 +1220,14 @@ mod tests {
             "Alien (1979)/Alien (1979)-trailer.mp4",
             ".hidden/x.mkv",
             "notes.txt",
+            // A show in a movie library, hidden by an empty .ignore.
+            "Some Show/.ignore",
+            "Some Show/Season 01/Some Show - S01E01.mkv",
         ] {
             let f = root.join(p);
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-            std::fs::write(&f, b"x").unwrap();
+            let content: &[u8] = if p.ends_with(".ignore") { b"" } else { b"x" };
+            std::fs::write(&f, content).unwrap();
         }
         let w = walk(std::slice::from_ref(&root)).unwrap();
         assert_eq!(w.files.len(), 1);

@@ -155,7 +155,13 @@ The scanner reads the layouts people already have:
   Episodes at the library root are grouped by the name before `SxxEyy`.
 - **Skipped:** hidden files, `Extras`, `Featurettes`, `Trailers`, `Samples`
   and similar directories, `-trailer`/`-sample` files, NAS metadata
-  directories (`@eaDir`, `#recycle`).
+  directories (`@eaDir`, `#recycle`), and what `.ignore` files hide, read as
+  Jellyfin reads them (current releases): the nearest one decides; empty, it
+  hides its directory; otherwise gitignore patterns, case-insensitive, via
+  ripgrep's `ignore` crate. Patterns are relative to the `.ignore`'s
+  directory (Jellyfin matches the absolute path, which only differs for
+  patterns naming a directory above it), and the search stops at the
+  library path.
 - **Sidecars:** `Movie.en.srt`, `Movie.fre.forced.srt` (language, forced flag,
   label); `poster`, `folder`, `cover`, `fanart`, `backdrop`, `<name>-poster`,
   `<name>-thumb`, `seasonNN-poster`.
