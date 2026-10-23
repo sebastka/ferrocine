@@ -21,7 +21,7 @@ use crate::transcode::Transcoder;
 
 pub fn http_client() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
-        .user_agent(concat!("Ferrocine/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("Ferrocine/{}", crate::VERSION))
         .pool_max_idle_per_host(4)
         .build()?)
 }

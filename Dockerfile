@@ -11,10 +11,12 @@ COPY migrations ./migrations
 # Fully static binary: it needs nothing from the runtime image. An explicit
 # --target keeps RUSTFLAGS away from proc-macros, which must stay dynamic.
 ENV RUSTFLAGS="-C target-feature=+crt-static"
+# The release tag (e.g. 2026-10-23), shown by --version and /api/v1/system.
+ARG VERSION=""
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
     target="$(rustc -vV | sed -n 's/^host: //p')" \
- && cargo build --release --locked --target "$target" \
+ && FERROCINE_VERSION="$VERSION" cargo build --release --locked --target "$target" \
  && cp "target/$target/release/ferrocine" /ferrocine
 
 # Hardened Debian runtime (non-root user 65532, CA bundle, no package

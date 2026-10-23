@@ -12,6 +12,30 @@ Ferrocine runs as two containers and a database:
   first-party). Put your TLS reverse proxy or ingress in front of it.
 - **PostgreSQL or MariaDB**, holding state, metadata and artwork: back it up.
 
+## Image tags and signatures
+
+Both images are released together by date:
+
+| Tag | What |
+| --- | --- |
+| `2026-10-23` | A release, by its date (UTC); `2026-10-23.1`, `.2`… for further releases the same day. Pin this. |
+| `latest` | The latest release. |
+| `edge` | The `master` branch, at every push. |
+| `sha-<commit>` | One commit. |
+
+Every image is signed with cosign (keyless, by the repository's release
+workflow) and carries a signed build provenance attestation, an SBOM and
+BuildKit provenance. Check them before deploying:
+
+```sh
+cosign verify ghcr.io/sebastka/ferrocine:2026-10-23 \
+  --certificate-identity https://github.com/sebastka/ferrocine/.github/workflows/release.yaml@refs/heads/master \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify --repo sebastka/ferrocine oci://ghcr.io/sebastka/ferrocine:2026-10-23
+```
+
+The same works for `ghcr.io/sebastka/ferrocine-ui` with `sebastka/ferrocine-ui`.
+
 Ferrocine needs, besides its configuration:
 
 | Path | Access | Holds |

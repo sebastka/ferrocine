@@ -54,7 +54,7 @@ pub async fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(3))
         .timeout(TIMEOUT)
-        .user_agent(concat!("Ferrocine/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("Ferrocine/{}", crate::VERSION))
         .build()?;
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {

@@ -92,11 +92,19 @@
       matchUpdateTypes: ["minor", "patch", "digest", "pin", "pinDigest"],
     },
     {
-      description: "The project's own images in the deployment examples track `edge` on purpose.",
+      description: "The project's own images in the deployment examples follow each dated release (YYYY-MM-DD, then .1, .2 the same day), at once.",
+      matchDatasources: ["docker"],
       matchPackageNames: ["ghcr.io/sebastka/ferrocine", "ghcr.io/sebastka/ferrocine-ui"],
-      enabled: false,
+      versioning: "regex:^(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})(?:\\.(?<build>\\d+))?$",
+      minimumReleaseAge: null,
+      automerge: true,
+      groupName: "Ferrocine images",
     },
   ],
+
+  kubernetes: {
+    managerFilePatterns: ["/^deploy/kubernetes\\.yaml$/"],
+  },
 
   customManagers: [
     {

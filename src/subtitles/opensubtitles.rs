@@ -167,10 +167,7 @@ impl OpenSubtitles {
             .request(method, self.url(path))
             .header("Api-Key", &self.config.api_key)
             // The API wants "<application> v<version>".
-            .header(
-                reqwest::header::USER_AGENT,
-                concat!("Ferrocine v", env!("CARGO_PKG_VERSION")),
-            )
+            .header(reqwest::header::USER_AGENT, format!("Ferrocine v{}", crate::VERSION))
             .header(reqwest::header::ACCEPT, "application/json")
             .timeout(TIMEOUT)
     }

@@ -66,7 +66,7 @@ pub async fn system(State(state): State<Arc<AppState>>, Extension(user): Extensi
         })
         .collect();
     Json(System {
-        version: env!("CARGO_PKG_VERSION"),
+        version: crate::VERSION,
         ffmpeg: &state.transcoder.ffmpeg,
         metadata: MetadataOut {
             tmdb: state.config().metadata.tmdb.is_some(),

@@ -469,7 +469,19 @@ would spare the CPU on 4K sources.
   smoke test that also checks ffmpeg's encoders.
 - **Release** (`release.yaml`): multi-arch images (amd64 and arm64 on native
   runners, merged by digest) pushed to `ghcr.io/sebastka/ferrocine` with SBOM
-  and provenance; pushes to `master` publish `edge`, `v*` tags semver tags.
+  and provenance. Pushes to `master` publish `edge` and `sha-<commit>`.
+  Releases are dated, as in the other images of this account: running the
+  workflow by hand on `master` publishes `YYYY-MM-DD` (UTC; `.1`, `.2`… for
+  further releases the same day) and `latest`, a Git tag and a GitHub release
+  with generated notes. The deployment examples pin a release, and Renovate
+  moves them to each new one. Dates rather than semver: the server and the UI ship
+  together and continuously, and a date says how current an image is. The
+  binary reports the tag (`--version`, `/api/v1/system`).
+- **Signing:** every published image (edge included) is signed with cosign,
+  keyless, by the release workflow's GitHub identity, and gets a build
+  provenance attestation from `actions/attest`, pushed to the registry; both
+  are verified in the workflow before a release is created. Signing the
+  index digest covers each platform's image and its SBOM and provenance.
 - **Pinning:** Actions by commit SHA, images by multi-arch index digest.
 - **Renovate** rather than Dependabot, which reads neither the `# syntax=`
   directive, nor service containers, nor images mounted in `RUN`, nor the

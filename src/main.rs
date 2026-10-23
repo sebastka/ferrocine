@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version = ferrocine::VERSION, about)]
 struct Cli {
     /// Configuration file, or directory of *.yaml files.
     #[arg(
