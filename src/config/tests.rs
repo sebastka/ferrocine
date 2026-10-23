@@ -103,9 +103,30 @@ fn sections_merge_across_files_but_not_twice() {
 #[test]
 fn the_example_is_valid() {
     let text = include_str!("../../examples/config.yaml");
-    // Its secrets come from the environment: replace the references.
-    let text = regex::Regex::new(r"\$\{[A-Z_]+\}").unwrap().replace_all(text, "x");
-    let c = from_str(&text).unwrap();
+    // Only the database password and the client secret are required: the
+    // providers' keys default to empty (off).
+    let required = regex::Regex::new(r"\$\{[A-Z_]+\}").unwrap();
+    let names: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .flat_map(|l| required.find_iter(l).map(|m| m.as_str()))
+        .collect();
+    assert_eq!(names, ["${POSTGRES_PASSWORD}", "${OIDC_CLIENT_SECRET}"]);
+    // Defaults resolved here: the test must not depend on the environment.
+    let optional = regex::Regex::new(r"\$\{[A-Z_]+:-([^}]*)\}").unwrap();
+    let defaults = optional.replace_all(text, |c: &regex::Captures| match &c[1] {
+        "" => "''".to_owned(),
+        d => d.to_owned(),
+    });
+    let c = from_str(&required.replace_all(&defaults, "x")).unwrap();
+    assert!(c.metadata.tmdb.is_none() && c.metadata.anidb.is_none() && c.subtitles.opensubtitles.is_none());
+    // With every key set, every provider is on.
+    let all = regex::Regex::new(r"\$\{[A-Z_]+(:-[^}]*)?\}").unwrap();
+    let keyed = all.replace_all(text, |c: &regex::Captures| match c.get(1).map(|d| &d.as_str()[2..]) {
+        Some(d) if !d.is_empty() => d.to_owned(),
+        _ => "x".to_owned(),
+    });
+    let c = from_str(&keyed).unwrap();
     assert!(c.metadata.tvdb.is_some() && c.metadata.anidb.is_some() && c.subtitles.opensubtitles.is_some());
     assert!(c.libraries.iter().any(|l| l.anime));
 }
