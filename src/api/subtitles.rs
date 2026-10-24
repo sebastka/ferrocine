@@ -34,6 +34,14 @@ pub fn stream_of(s: &StoredSubtitle) -> SubtitleStream {
     }
 }
 
+/// Subtitles are searched for movies and episodes. Extras have nothing to be
+/// found by: no ids, and titles such as "Extra 1" match other films.
+fn searchable(kind: ItemKind) -> bool {
+    matches!(kind, ItemKind::Movie | ItemKind::Episode)
+}
+
+const NOT_SEARCHABLE: &str = "subtitles are searched for movies and episodes only";
+
 fn client(state: &AppState) -> Option<OpenSubtitles> {
     let cfg = state.config().subtitles.opensubtitles.clone()?;
     Some(OpenSubtitles::new(cfg, state.http.clone(), state.providers.clone()))
@@ -56,13 +64,13 @@ pub async fn search(
     Path(id): Path<i64>,
     Query(p): Query<SearchParams>,
 ) -> Response {
+    let row = match visible_item(&state, &user, id).await {
+        Ok(r) if searchable(r.kind) => r,
+        Ok(_) => return error(StatusCode::BAD_REQUEST, NOT_SEARCHABLE),
+        Err(resp) => return resp,
+    };
     let Some(os) = client(&state) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "no subtitle provider is configured");
-    };
-    let row = match visible_item(&state, &user, id).await {
-        Ok(r) if r.kind.playable() => r,
-        Ok(_) => return error(StatusCode::BAD_REQUEST, "only movies and episodes have subtitles"),
-        Err(resp) => return resp,
     };
     let languages: Vec<String> = match p.language.as_deref().filter(|l| !l.trim().is_empty()) {
         Some(list) => {
@@ -143,14 +151,14 @@ pub async fn download(
     Path(id): Path<i64>,
     Json(req): Json<DownloadRequest>,
 ) -> Response {
+    match visible_item(&state, &user, id).await {
+        Ok(r) if searchable(r.kind) => {}
+        Ok(_) => return error(StatusCode::BAD_REQUEST, NOT_SEARCHABLE),
+        Err(resp) => return resp,
+    }
     let Some(os) = client(&state) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "no subtitle provider is configured");
     };
-    match visible_item(&state, &user, id).await {
-        Ok(r) if r.kind.playable() => {}
-        Ok(_) => return error(StatusCode::BAD_REQUEST, "only movies and episodes have subtitles"),
-        Err(resp) => return resp,
-    }
     let Some(language) = crate::lang::iso1(&req.language) else {
         return error(StatusCode::BAD_REQUEST, "language: unknown code");
     };

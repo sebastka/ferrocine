@@ -308,7 +308,8 @@ cues are shifted so that time 0 is `start_ms` (matches an HLS stream started the
 
 Searches OpenSubtitles.com for a movie or episode (by file hash and provider ids). `language`:
 ISO 639-1 codes; default the configured `subtitles.languages`, else `en`. Hash matches first.
-`503` when no subtitle provider is configured, `502` when it does not answer.
+`400` for an extra (it has no ids to be found by), `503` when no subtitle provider is configured,
+`502` when it does not answer. Extras are never searched automatically either.
 
 ```json
 { "results": [{ "file_id": 1954081, "language": "fr", "release": "Sintel.2010.1080p",
