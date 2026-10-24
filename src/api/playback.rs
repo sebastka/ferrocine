@@ -27,6 +27,8 @@ pub struct PlaybackRequest {
     force_transcode: bool,
     #[serde(default)]
     capabilities: ClientCaps,
+    /// A bitmap subtitle stream (`text: false`) to burn into the picture.
+    burn_subtitle: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -39,6 +41,8 @@ struct PlaybackResponse {
     hw_accel: Option<HwKind>,
     /// HDR video tone-mapped to SDR.
     tone_mapping: bool,
+    /// The bitmap subtitle stream burned into the picture.
+    burned_subtitle: Option<i32>,
     reasons: Vec<String>,
 }
 
@@ -48,7 +52,9 @@ async fn media_file(row: &ItemRow) -> Result<std::path::PathBuf, Response> {
         return Err(error(StatusCode::BAD_REQUEST, "this item has no media file"));
     };
     let path = std::path::PathBuf::from(path);
-    if tokio::fs::metadata(&path).await.is_err() {
+    // A disc title names the disc (folder or image) and a title of it.
+    let on_disk = crate::media::disc::locate(&path).map_or_else(|| path.clone(), |(s, _)| s.path().to_path_buf());
+    if tokio::fs::metadata(&on_disk).await.is_err() {
         tracing::warn!(file = %path.display(), "media file unavailable");
         return Err(error(StatusCode::SERVICE_UNAVAILABLE, "the media file is unavailable"));
     }
@@ -77,6 +83,14 @@ pub async fn playback(
     {
         return error(StatusCode::BAD_REQUEST, "audio_index: no such audio stream");
     }
+    if let Some(i) = req.burn_subtitle
+        && !media.subtitle(i).is_some_and(|s| !s.text && !s.external)
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "burn_subtitle: no such bitmap subtitle stream (text subtitles are sent as WebVTT)",
+        );
+    }
     let decision = plan::decide(
         media,
         &plan::Request {
@@ -85,6 +99,7 @@ pub async fn playback(
             max_height: req.max_height,
             max_bitrate: req.max_bitrate,
             force_transcode: req.force_transcode,
+            burn_subtitle: req.burn_subtitle,
         },
         plan::Limits {
             max_height: state.config().transcoding.max_height,
@@ -102,6 +117,7 @@ pub async fn playback(
             duration_ms: duration,
             hw_accel: None,
             tone_mapping: false,
+            burned_subtitle: None,
             reasons: decision.reasons,
         })
         .into_response();
@@ -116,6 +132,12 @@ pub async fn playback(
         .start(StartRequest {
             plan: &decision,
             file: &file,
+            // A DVD's stream order varies along a title: streams go by id.
+            stream_ids: if crate::media::disc::is_dvd(&file) {
+                media.stream_ids()
+            } else {
+                Default::default()
+            },
             start_ms,
             user_id: user.id,
             username: &user.username,
@@ -132,6 +154,7 @@ pub async fn playback(
             duration_ms: duration,
             hw_accel: session.hw_accel,
             tone_mapping: decision.tone_mapped(),
+            burned_subtitle: decision.burned(),
             reasons: decision.reasons,
         })
         .into_response(),

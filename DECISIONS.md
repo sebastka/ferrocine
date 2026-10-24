@@ -153,29 +153,42 @@ The scanner reads the layouts people already have:
   `S01E02`, `s1e2`, `1x02`, or `02 - Title` inside a `Season N` directory;
   `Specials` is season 0; multi-episode files count as their first episode.
   Episodes at the library root are grouped by the name before `SxxEyy`.
-- **Skipped:** hidden files, `Extras`, `Featurettes`, `Trailers`, `Samples`
-  and similar directories, `-trailer`/`-sample` files, NAS metadata
-  directories (`@eaDir`, `#recycle`), and what `.ignore` files hide, read as
+- **Skipped:** hidden files, `Samples` directories and `-sample` files, NAS
+  metadata directories (`@eaDir`, `#recycle`), and what `.ignore` files hide, read as
   Jellyfin reads them (current releases): the nearest one decides; empty, it
   hides its directory; otherwise gitignore patterns, case-insensitive, via
   ripgrep's `ignore` crate. Patterns are relative to the `.ignore`'s
   directory (Jellyfin matches the absolute path, which only differs for
   patterns naming a directory above it), and the search stops at the
   library path.
-- **Disc folders** (`VIDEO_TS`, `BDMV`) are one movie each, named by the
-  folder holding them. The DVD feature is the title set with the most data,
-  read whole through ffmpeg's `concat:` protocol (its VOB parts are one MPEG
-  program stream cut at 1 GiB). A DVD's timestamps restart inside the title
-  set: on a real disc ffprobe saw 49 minutes of a 113-minute film, and `-ss`
-  found nothing at some times, with the concat protocol and with Jellyfin's
-  concat demuxer alike. So the title set's IFO is read (about 100 lines, no
-  `libdvdread`, which Jellyfin's ffmpeg lacks along with its `dvdvideo`
-  demuxer): its longest program chain gives the duration, and its cells map
-  a time to a sector, where ffmpeg starts (`-skip_initial_bytes`); seeking
-  anywhere on that disc took about 0.1 s. Without an IFO, ffprobe's duration
-  and `-ss` are the fallback. The Blu-ray feature is the largest
-  `BDMV/STREAM` file. Show libraries skip disc folders, and ISO images are
-  not read.
+- **DVDs** (folders and images) are read through their information files,
+  parsed here (a few hundred lines, no `libdvdread`: Jellyfin's ffmpeg has
+  neither it nor the `dvdvideo` demuxer). A DVD's timestamps restart along a
+  title: on a real disc ffprobe saw 49 minutes of a 113-minute film, and
+  `-ss` found nothing at some times, with the concat protocol and with
+  Jellyfin's concat demuxer alike. The disc's title table names the titles;
+  each is a list of cells (sector runs with play times), read as exactly
+  those bytes: `subfile` ranges of the VOBs, or of the image, joined by
+  `concat:`. Duration, chapters and track languages come from the IFO;
+  playback starts at the bytes of the cell playing at the wanted time, by
+  starting the input there (`-skip_initial_bytes` does not pass through
+  `subfile`); seeking anywhere took about 0.1 s on two real discs. Streams
+  of a DVD are mapped by MPEG stream id, since their order depends on where
+  reading starts. Cells under two seconds at either end of a title are
+  left out: on a real disc they were warnings whose nominal half second
+  hid 50 MB of stills each, inside the film's byte range.
+- **A DVD's titles:** the longest is the movie; titles of a minute or more,
+  with sound, not replaying the movie's cells (scene selections) are its
+  extras; in a show library, titles of five minutes or more are episodes,
+  without "play all" titles (those replaying two others), numbered on in
+  disc order within the season. An item's path is `<disc>#<title>`.
+  Images are read through their ISO 9660 side (DVD-Video discs are UDF
+  bridge discs); Blu-ray images, UDF only, are not. Without `VIDEO_TS.IFO`,
+  the title set with the most data is the movie. The Blu-ray feature is the
+  largest `BDMV/STREAM` file.
+- **Extras** are items of their own (kind `extra`, under their movie):
+  DVD titles, files of Jellyfin's extras folders and `-trailer`-style files.
+  They are listed by the movie's children and play like anything else.
 - **Sidecars:** `Movie.en.srt`, `Movie.fre.forced.srt` (language, forced flag,
   label); `poster`, `folder`, `cover`, `fanart`, `backdrop`, `<name>-poster`,
   `<name>-thumb`, `seasonNN-poster`.
@@ -410,8 +423,14 @@ would spare the CPU on 4K sources.
   sidecar) are converted by ffmpeg once, cached in memory (32 tracks), and
   shifted in Rust for streams that start later, instead of having ffmpeg read
   the file again.
-- **Bitmap subtitles** (PGS, VobSub) are listed but cannot be shown; burning
-  them into a transcode is the usual answer and is not implemented.
+- **Bitmap subtitles** (PGS, VobSub, DVD) are burned into the picture when
+  the client asks (`burn_subtitle`): an `overlay` before scaling, on
+  software frames (such sessions start at the hybrid pipeline: software
+  decoding, GPU encoding), with the disc's palette for DVD subtitles.
+  Subtitles a DVD declares but ffprobe did not meet yet are listed from the
+  IFO, and a burned-in DVD session reads further ahead (200 MB, 10 minutes)
+  so that the stream exists when ffmpeg binds it.
+- **Chapters** come from ffprobe (`-show_chapters`), or from a DVD's IFO.
 - **Downloaded subtitles** come from OpenSubtitles.com, the largest source
   with a documented API. They are stored in the database as WebVTT
   (libraries stay read-only, D5) and appear as streams with indices from
@@ -544,7 +563,7 @@ would spare the CPU on 4K sources.
   (D10); Chromecast/DLNA.
 - **Content:** music, books, photos, live TV; collections, multiple versions
   or parts (`cd1`/`cd2`) of a movie, people pages and their pictures.
-- **Playback:** bitmap subtitle burn-in, trickplay
+- **Playback:** trickplay
   thumbnails, intro and credits detection, SyncPlay.
 - **Operations:** configuration file watching, purging removed libraries,
   sharing playback sessions across replicas.

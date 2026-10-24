@@ -80,6 +80,8 @@ pub struct SessionInfo {
 pub struct StartRequest<'a> {
     pub plan: &'a Plan,
     pub file: &'a Path,
+    /// For a DVD: stream index → MPEG stream id (`-map 0:i:0x80`).
+    pub stream_ids: HashMap<i32, String>,
     pub start_ms: i64,
     pub user_id: i64,
     pub username: &'a str,
@@ -200,7 +202,7 @@ impl Transcoder {
         }
         let encoding = r.plan.method == Method::Transcode;
         let pipelines = if encoding {
-            plan::pipelines(self.ffmpeg.hw_accel, r.plan.tone_mapped())
+            plan::pipelines(self.ffmpeg.hw_accel, r.plan.tone_mapped(), r.plan.burned().is_some())
         } else {
             vec![Pipeline::Software]
         };
@@ -277,6 +279,11 @@ impl Transcoder {
                 device: &self.cfg.device,
                 x264_preset: &self.cfg.x264_preset,
                 tone_mapper: self.ffmpeg.tone_mapper.unwrap_or(hw::ToneMapper::Tonemapx),
+                subtitle_palette: r
+                    .plan
+                    .burned()
+                    .and_then(|_| crate::media::disc::subtitle_palette(r.file)),
+                stream_ids: &r.stream_ids,
             },
         );
         tracing::debug!(args = %args.join(" "), "starting ffmpeg");

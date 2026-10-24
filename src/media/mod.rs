@@ -18,6 +18,8 @@ pub enum ItemKind {
     Series,
     Season,
     Episode,
+    /// A movie's extra (trailer, featurette, DVD bonus…), under it.
+    Extra,
 }
 
 impl ItemKind {
@@ -27,6 +29,7 @@ impl ItemKind {
             ItemKind::Series => 2,
             ItemKind::Season => 3,
             ItemKind::Episode => 4,
+            ItemKind::Extra => 5,
         }
     }
 
@@ -35,13 +38,14 @@ impl ItemKind {
             2 => ItemKind::Series,
             3 => ItemKind::Season,
             4 => ItemKind::Episode,
+            5 => ItemKind::Extra,
             _ => ItemKind::Movie,
         }
     }
 
-    /// Movies and episodes have a file.
+    /// Movies, episodes and extras have a file.
     pub fn playable(self) -> bool {
-        matches!(self, ItemKind::Movie | ItemKind::Episode)
+        matches!(self, ItemKind::Movie | ItemKind::Episode | ItemKind::Extra)
     }
 }
 

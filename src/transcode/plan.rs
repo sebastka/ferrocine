@@ -26,6 +26,8 @@ pub struct Request {
     pub max_height: Option<u32>,
     pub max_bitrate: Option<u64>,
     pub force_transcode: bool,
+    /// A bitmap subtitle stream (PGS, DVD) to burn into the picture.
+    pub burn_subtitle: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,6 +62,8 @@ pub enum VideoPlan {
         bitrate: u64,
         /// HDR source: tone-map to SDR (BT.709).
         tone_map: bool,
+        /// A bitmap subtitle stream overlaid on the picture.
+        burn: Option<i32>,
     },
 }
 
@@ -81,6 +85,14 @@ pub struct Plan {
 impl Plan {
     pub fn tone_mapped(&self) -> bool {
         matches!(self.video, VideoPlan::Encode { tone_map: true, .. })
+    }
+
+    /// The subtitle stream burned into the picture.
+    pub fn burned(&self) -> Option<i32> {
+        match self.video {
+            VideoPlan::Encode { burn, .. } => burn,
+            _ => None,
+        }
     }
 }
 
@@ -152,6 +164,15 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
     if req.force_transcode {
         reasons.push("transcoding was requested".into());
     }
+    // Bitmap subtitles cannot be sent as text: they are drawn on the picture.
+    let burn = req
+        .burn_subtitle
+        .and_then(|i| media.subtitle(i))
+        .filter(|s| !s.text && !s.external)
+        .map(|s| s.index);
+    if burn.is_some() {
+        reasons.push("bitmap subtitles are burned into the picture".into());
+    }
     if too_tall {
         reasons.push(format!("the video is taller than {limit_height} pixels"));
     }
@@ -178,6 +199,7 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
     let container_ok = has(&req.caps.containers, &media.container);
     let audio_is_first = audio.is_none_or(|a| Some(a.index) == first_audio);
     if !req.force_transcode
+        && burn.is_none()
         && !too_tall
         && !too_fast
         && video_playable
@@ -208,6 +230,7 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
         None => VideoPlan::None,
         Some(v)
             if !req.force_transcode
+                && burn.is_none()
                 && !too_tall
                 && !too_fast
                 && video_playable
@@ -241,6 +264,7 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
                 height,
                 bitrate,
                 tone_map: limits.tone_mapping && v.hdr.is_some(),
+                burn,
             }
         }
     };
@@ -289,9 +313,11 @@ impl Pipeline {
 /// the output size. With VA-API, the GPU decodes and scales and the frames
 /// are downloaded for it; Quick Sync and NVENC sessions that tone-map start
 /// at the hybrid pipeline (software decoding), since their GPU tone mappers
-/// could not be tested.
-pub fn pipelines(accel: Option<HwKind>, tone_map: bool) -> Vec<Pipeline> {
+/// could not be tested. Burning subtitles in overlays them on software
+/// frames: those sessions start at the hybrid pipeline on every GPU.
+pub fn pipelines(accel: Option<HwKind>, tone_map: bool, burn: bool) -> Vec<Pipeline> {
     match accel {
+        Some(k) if burn => vec![Pipeline::HybridEncode(k), Pipeline::Software],
         Some(k @ (HwKind::Qsv | HwKind::Nvenc)) if tone_map => vec![Pipeline::HybridEncode(k), Pipeline::Software],
         Some(k) => vec![Pipeline::Hardware(k), Pipeline::HybridEncode(k), Pipeline::Software],
         None => vec![Pipeline::Software],
@@ -307,6 +333,10 @@ pub struct CommandSpec<'a> {
     pub x264_preset: &'a str,
     /// Used when the plan tone-maps.
     pub tone_mapper: ToneMapper,
+    /// Colours of DVD subtitles to burn in (`rrggbb,…`), from the disc.
+    pub subtitle_palette: Option<String>,
+    /// Stream index → stream id: streams of a DVD are mapped by id.
+    pub stream_ids: &'a std::collections::HashMap<i32, String>,
 }
 
 /// ffmpeg arguments writing an fMP4 HLS EVENT playlist in `out_dir`.
@@ -382,11 +412,28 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
             Pipeline::HybridEncode(HwKind::Nvenc) | Pipeline::Software => {}
         }
     }
+    if let (Some(_), Some(palette)) = (plan.burned(), &s.subtitle_palette) {
+        a.extend(["-palette:s".into(), palette.clone()]);
+    }
+    // A DVD: subtitle streams appear when first shown, so a burn-in reads
+    // further ahead before binding them.
+    if !s.stream_ids.is_empty() {
+        let (size, duration) = if plan.burned().is_some() {
+            ("200M", "600M")
+        } else {
+            ("32M", "30M")
+        };
+        a.extend(["-probesize", size, "-analyzeduration", duration].map(String::from));
+    }
+    let sel = |index: i32| match s.stream_ids.get(&index) {
+        Some(id) => format!("0:i:{id}"),
+        None => format!("0:{index}"),
+    };
     a.extend(crate::media::disc::input_args(s.input, s.start_ms));
     match &plan.video {
         VideoPlan::None => {}
         VideoPlan::Copy { index, hevc } => {
-            a.extend(["-map".into(), format!("0:{index}"), "-c:v".into(), "copy".into()]);
+            a.extend(["-map".into(), sel(*index), "-c:v".into(), "copy".into()]);
             if *hevc {
                 // Browsers want the hvc1 sample entry for HEVC in MP4.
                 a.extend(["-tag:v", "hvc1"].map(String::from));
@@ -398,8 +445,8 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
             height,
             bitrate,
             tone_map,
+            burn,
         } => {
-            a.extend(["-map".into(), format!("0:{index}")]);
             let (w, h) = (*width, *height);
             let (filter, encoder): (String, &str) = match pipeline {
                 Pipeline::Hardware(HwKind::Vaapi) if *tone_map => (
@@ -439,7 +486,22 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
                 Pipeline::HybridEncode(HwKind::Nvenc) => (format!("scale={w}:{h},format=yuv420p"), "h264_nvenc"),
                 Pipeline::Software => (format!("scale={w}:{h},format=yuv420p"), "libx264"),
             };
-            a.extend(["-vf".into(), filter, "-c:v".into(), encoder.into()]);
+            match burn {
+                // Overlaid at the source size, before scaling (software frames:
+                // a burn-in starts from the software-decoding pipelines).
+                Some(sub) => a.extend([
+                    "-filter_complex".into(),
+                    format!(
+                        "[{}][{}]overlay=eof_action=pass:repeatlast=0,{filter}[v]",
+                        sel(*index),
+                        sel(*sub)
+                    ),
+                    "-map".into(),
+                    "[v]".into(),
+                ]),
+                None => a.extend(["-map".into(), sel(*index), "-vf".into(), filter]),
+            }
+            a.extend(["-c:v".into(), encoder.into()]);
             match encoder {
                 "libx264" => a.extend(["-preset", s.x264_preset, "-profile:v", "high"].map(String::from)),
                 "h264_nvenc" => a.extend(["-preset", "p4", "-profile:v", "high"].map(String::from)),
@@ -461,10 +523,10 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
     }
     match &plan.audio {
         AudioPlan::None => a.push("-an".into()),
-        AudioPlan::Copy { index } => a.extend(["-map".into(), format!("0:{index}"), "-c:a".into(), "copy".into()]),
+        AudioPlan::Copy { index } => a.extend(["-map".into(), sel(*index), "-c:a".into(), "copy".into()]),
         AudioPlan::Aac { index } => a.extend([
             "-map".into(),
-            format!("0:{index}"),
+            sel(*index),
             "-c:a".into(),
             "aac".into(),
             "-ac".into(),
@@ -543,6 +605,7 @@ mod tests {
                 })
                 .collect(),
             subtitles: vec![],
+            chapters: vec![],
         }
     }
 
@@ -604,7 +667,8 @@ mod tests {
                 width: 1280,
                 height: 720,
                 bitrate: 3_500_000,
-                tone_map: false
+                tone_map: false,
+                burn: None
             }
         );
         let mut r = req();
@@ -651,6 +715,8 @@ mod tests {
             device: Path::new("/dev/dri/renderD128"),
             x264_preset: "veryfast",
             tone_mapper: ToneMapper::Tonemapx,
+            subtitle_palette: None,
+            stream_ids: &Default::default(),
         };
         let tm = "tonemapx=tonemap=bt2390:desat=0:t=bt709:m=bt709:p=bt709:r=tv";
         let hw = hls_args(&p, Pipeline::Hardware(HwKind::Vaapi), &spec).join(" ");
@@ -665,12 +731,73 @@ mod tests {
         assert!(nv.contains(&format!("{tm}:format=yuv420p -c:v h264_nvenc")), "{nv}");
         // Quick Sync and NVENC tone-map from the hybrid pipeline on.
         assert_eq!(
-            pipelines(Some(HwKind::Nvenc), true),
+            pipelines(Some(HwKind::Nvenc), true, false),
             [Pipeline::HybridEncode(HwKind::Nvenc), Pipeline::Software]
         );
         assert_eq!(
-            pipelines(Some(HwKind::Vaapi), true)[0],
+            pipelines(Some(HwKind::Vaapi), true, false)[0],
             Pipeline::Hardware(HwKind::Vaapi)
+        );
+    }
+
+    #[test]
+    fn burns_bitmap_subtitles() {
+        let mut m = media("mp4", "h264", &["aac"]);
+        let sub = |index: i32, codec: &str, text: bool| crate::media::probe::SubtitleStream {
+            index,
+            codec: codec.into(),
+            text,
+            ..Default::default()
+        };
+        m.subtitles = vec![sub(3, "dvd_subtitle", false), sub(4, "subrip", true)];
+        let burn = |i: i32| Request {
+            burn_subtitle: Some(i),
+            ..req()
+        };
+        // Direct play otherwise; a bitmap subtitle forces an encode.
+        assert_eq!(decide_(&m, &req(), 2160).method, Method::Direct);
+        let plan = decide_(&m, &burn(3), 2160);
+        assert_eq!((plan.method, plan.burned()), (Method::Transcode, Some(3)));
+        assert!(plan.reasons.iter().any(|r| r.contains("burned")));
+        // Text subtitles are sent as WebVTT, never burned.
+        assert_eq!(decide_(&m, &burn(4), 2160).burned(), None);
+        assert_eq!(
+            pipelines(Some(HwKind::Vaapi), false, true),
+            [Pipeline::HybridEncode(HwKind::Vaapi), Pipeline::Software]
+        );
+        let spec = CommandSpec {
+            input: Path::new("/m/a.mkv"),
+            start_ms: 0,
+            out_dir: Path::new("/tmp/s1"),
+            segment_seconds: 4,
+            device: Path::new("/dev/dri/renderD128"),
+            x264_preset: "veryfast",
+            tone_mapper: ToneMapper::Tonemapx,
+            subtitle_palette: Some("000000,ffffff".into()),
+            stream_ids: &Default::default(),
+        };
+        let a = hls_args(&plan, Pipeline::Software, &spec).join(" ");
+        assert!(!a.contains("probesize"), "{a}");
+        // A DVD: by stream id, reading further ahead for the subtitle.
+        let ids = [(0, "0x1e0".to_owned()), (1, "0x80".to_owned()), (3, "0x20".to_owned())].into();
+        let dvd = CommandSpec {
+            stream_ids: &ids,
+            subtitle_palette: spec.subtitle_palette.clone(),
+            ..spec
+        };
+        let d = hls_args(&plan, Pipeline::Software, &dvd).join(" ");
+        assert!(d.contains("-probesize 200M -analyzeduration 600M -i"), "{d}");
+        assert!(
+            d.contains("[0:i:0x1e0][0:i:0x20]overlay") && d.contains("-map 0:i:0x80"),
+            "{d}"
+        );
+        let a = hls_args(&plan, Pipeline::HybridEncode(HwKind::Vaapi), &spec).join(" ");
+        assert!(a.contains("-palette:s 000000,ffffff -i /m/a.mkv"), "{a}");
+        assert!(
+            a.contains(
+                "-filter_complex [0:0][0:3]overlay=eof_action=pass:repeatlast=0,scale=1920:1080,format=nv12,hwupload[v] -map [v] -c:v h264_vaapi"
+            ),
+            "{a}"
         );
     }
 
@@ -685,6 +812,8 @@ mod tests {
             device: Path::new("/dev/dri/renderD128"),
             x264_preset: "veryfast",
             tone_mapper: ToneMapper::Tonemapx,
+            subtitle_palette: None,
+            stream_ids: &Default::default(),
         };
         let hw = hls_args(&plan, Pipeline::Hardware(HwKind::Vaapi), &spec).join(" ");
         assert!(hw.contains(
@@ -732,7 +861,7 @@ mod tests {
             "{qsv}"
         );
         // Every pipeline keeps keyframes on segment boundaries.
-        for p in pipelines(Some(HwKind::Nvenc), false) {
+        for p in pipelines(Some(HwKind::Nvenc), false, false) {
             assert!(
                 hls_args(&plan, p, &spec)
                     .join(" ")

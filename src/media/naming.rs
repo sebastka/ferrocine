@@ -13,19 +13,36 @@ pub const VIDEO_EXTENSIONS: [&str; 17] = [
 pub const SUBTITLE_EXTENSIONS: [&str; 4] = ["srt", "vtt", "ass", "ssa"];
 pub const IMAGE_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
-/// Directories never scanned: extras, NAS metadata, recycle bins.
-const SKIPPED_DIRS: [&str; 17] = [
-    "extras",
-    "featurettes",
-    "behind the scenes",
-    "deleted scenes",
-    "interviews",
-    "scenes",
-    "shorts",
-    "trailers",
+/// Directories of a movie's extras (Jellyfin's names), and their kind.
+const EXTRA_DIRS: [(&str, &str); 9] = [
+    ("extras", "extra"),
+    ("featurettes", "featurette"),
+    ("behind the scenes", "behind_the_scenes"),
+    ("deleted scenes", "deleted_scene"),
+    ("interviews", "interview"),
+    ("scenes", "scene"),
+    ("shorts", "short"),
+    ("trailers", "trailer"),
+    ("other", "extra"),
+];
+
+/// File name endings of a movie's extras, next to it, and their kind.
+const EXTRA_SUFFIXES: [(&str, &str); 9] = [
+    ("trailer", "trailer"),
+    ("featurette", "featurette"),
+    ("extra", "extra"),
+    ("behindthescenes", "behind_the_scenes"),
+    ("deleted", "deleted_scene"),
+    ("deletedscene", "deleted_scene"),
+    ("interview", "interview"),
+    ("scene", "scene"),
+    ("short", "short"),
+];
+
+/// Directories never scanned: samples, NAS metadata, recycle bins.
+const SKIPPED_DIRS: [&str; 8] = [
     "sample",
     "samples",
-    "other",
     "@eadir",
     "#recycle",
     "#snapshot",
@@ -142,22 +159,65 @@ pub fn is_skipped_dir(name: &str) -> bool {
     name.starts_with('.') || SKIPPED_DIRS.contains(&lower.as_str())
 }
 
-/// Trailers and samples next to the main file.
-pub fn is_extra_file(stem: &str) -> bool {
+/// The season of a disc's name: `Show S02D1`, `Show S2 Disc 3`,
+/// `Season 2 Disc 1`.
+pub fn disc_season(name: &str) -> Option<i32> {
+    static DISC: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(?:\bS|season\s*)(\d{1,2})\s*[ ._-]?\s*D(?:is[ck])?\s*\d").unwrap());
+    DISC.captures(name)?.get(1)?.as_str().parse().ok()
+}
+
+/// The kind of extra a directory holds (`Trailers` → `trailer`).
+pub fn extra_dir(name: &str) -> Option<&'static str> {
+    let lower = name.to_lowercase();
+    EXTRA_DIRS.iter().find(|(d, _)| *d == lower).map(|(_, k)| *k)
+}
+
+/// The kind of extra a file next to a movie is, from its name's ending
+/// (`Alien-trailer`, `Alien.featurette`, or just `trailer`).
+pub fn extra_file(stem: &str) -> Option<&'static str> {
     let lower = stem.to_lowercase();
-    lower == "sample"
-        || lower == "trailer"
-        || [
-            "-trailer",
-            ".trailer",
-            "-sample",
-            ".sample",
-            "-featurette",
-            "-extra",
-            "-behindthescenes",
-        ]
+    EXTRA_SUFFIXES.iter().find_map(|(suffix, kind)| {
+        let tail = lower.strip_suffix(suffix)?;
+        (tail.is_empty() || tail.ends_with(['-', '.', '_'])).then_some(*kind)
+    })
+}
+
+/// A sample cut of the release: never indexed.
+pub fn is_sample(stem: &str) -> bool {
+    let lower = stem.to_lowercase();
+    lower == "sample" || lower.ends_with("-sample") || lower.ends_with(".sample")
+}
+
+/// Not the main video: an extra or a sample.
+pub fn is_extra_file(stem: &str) -> bool {
+    extra_file(stem).is_some() || is_sample(stem)
+}
+
+/// The title of an extra from its file name: without the kind's ending,
+/// separators as spaces; the kind itself when nothing is left.
+pub fn extra_title(stem: &str, kind: &str) -> String {
+    let lower = stem.to_lowercase();
+    let cut = EXTRA_SUFFIXES
         .iter()
-        .any(|s| lower.ends_with(s))
+        .find_map(|(suffix, _)| {
+            let tail = lower.strip_suffix(suffix)?;
+            (tail.is_empty() || tail.ends_with(['-', '.', '_'])).then_some(tail.len())
+        })
+        .unwrap_or(stem.len());
+    let title = tidy(
+        &stem[..cut]
+            .replace(['.', '_'], " ")
+            .trim_end_matches(['-', ' '])
+            .replace("  ", " "),
+    );
+    if title.is_empty() {
+        let mut k = kind.replace('_', " ");
+        k[..1].make_ascii_uppercase();
+        k
+    } else {
+        title
+    }
 }
 
 fn provider_ids(s: &str) -> ProviderIds {
@@ -448,9 +508,20 @@ mod tests {
     fn sorting_and_skipping() {
         assert_eq!(sort_title("The Matrix"), "matrix");
         assert_eq!(sort_title("A"), "a");
-        assert!(is_skipped_dir("Extras") && is_skipped_dir(".hidden") && is_skipped_dir("@eaDir"));
+        assert!(!is_skipped_dir("Extras") && is_skipped_dir(".hidden") && is_skipped_dir("@eaDir"));
+        assert!(is_skipped_dir("Samples"));
+        assert_eq!(extra_dir("Behind The Scenes"), Some("behind_the_scenes"));
         assert!(is_extra_file("Movie-trailer") && is_extra_file("sample"));
-        assert!(!is_extra_file("Sampler"));
+        assert!(!is_extra_file("Sampler") && !is_extra_file("Scener") && !is_extra_file("Shortbus"));
+        assert_eq!(extra_file("Alien (1979)-trailer"), Some("trailer"));
+        assert_eq!(extra_file("trailer"), Some("trailer"));
+        assert_eq!(extra_title("Alien (1979)-trailer", "trailer"), "Alien (1979)");
+        assert_eq!(extra_title("trailer", "trailer"), "Trailer");
+        assert_eq!(extra_title("Making_of.the.film", "extra"), "Making of the film");
+        assert_eq!(
+            extra_title("behind-the-scenes", "behind_the_scenes"),
+            "behind-the-scenes"
+        );
     }
 
     #[test]

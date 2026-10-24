@@ -666,7 +666,7 @@ async fn sign_in_scan_and_play() {
         let page = admin
             .json(&format!("/api/v1/libraries/{movies_id}/items?sort=title"))
             .await;
-        assert_eq!(page["total"], 5, "{name}: {page}");
+        assert_eq!(page["total"], 6, "{name}: {page}");
         let items = &page["items"];
         let matrix = find(items, "The Matrix");
         let alien = find(items, "Alien");
@@ -857,16 +857,92 @@ async fn sign_in_scan_and_play() {
         );
         play_hls(&admin, &p).await;
 
-        // A DVD folder: one movie, named after its folder, both VOB parts of
-        // the feature playing as one stream, through a transcode only.
+        // A DVD folder: one movie (its longest title), named after its folder;
+        // duration, chapters and languages from its information files.
         let disc = find(items, "Disc Film");
         assert_eq!(disc["year"], 1950, "{name}");
         let did = disc["id"].as_i64().unwrap();
         let detail = admin.json(&format!("/api/v1/items/{did}")).await;
         assert_eq!(detail["media"]["container"], "dvd", "{name}");
         assert_eq!(detail["media"]["file_name"], "Disc Film (1950) NTSC DVD5", "{name}");
-        // The duration of the IFO, not ffprobe's estimate.
-        assert_eq!(detail["media"]["duration_ms"], 8000, "{name}");
+        assert_eq!(detail["media"]["duration_ms"], 240_000, "{name}");
+        let chapters: Vec<i64> = detail["media"]["chapters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["start_ms"].as_i64().unwrap())
+            .collect();
+        assert_eq!(chapters, [0, 120_000], "{name}");
+        assert_eq!(detail["media"]["audio"][0]["language"], "en", "{name}");
+        // Its other titles: the 90 s extra (the 5 s logo is no extra).
+        let extras = admin.json(&format!("/api/v1/items/{did}/children")).await;
+        assert_eq!(extras.as_array().unwrap().len(), 1, "{name}: {extras}");
+        assert_eq!(
+            (
+                extras[0]["kind"].as_str(),
+                extras[0]["extra_type"].as_str(),
+                extras[0]["title"].as_str()
+            ),
+            (Some("extra"), Some("extra"), Some("Extra 1")),
+            "{name}"
+        );
+        assert_eq!(extras[0]["runtime_ms"], 90_000, "{name}");
+        let p: Value = admin
+            .post(
+                &format!("/api/v1/items/{}/playback", extras[0]["id"]),
+                json!({"capabilities": caps, "max_height": 240}),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(p["method"], "transcode", "{name}: {p}");
+        play_hls(&admin, &p).await;
+        let sid = p["session_id"].as_str().unwrap();
+        admin
+            .send(admin.http.delete(admin.url(&format!("/api/v1/hls/{sid}"))))
+            .await;
+        // Extras of a file: a folder and a trailer next to it.
+        let mid = matrix["id"].as_i64().unwrap();
+        let extras = admin.json(&format!("/api/v1/items/{mid}/children")).await;
+        let mut kinds: Vec<(&str, &str)> = extras
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["extra_type"].as_str().unwrap(), e["title"].as_str().unwrap()))
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [("extra", "Behind the Story"), ("trailer", "The Matrix (1999)")],
+            "{name}"
+        );
+        // A DVD image: the same disc, read from the .iso.
+        let iso = find(items, "Iso Film");
+        assert_eq!(iso["year"], 1960, "{name}");
+        let detail = admin.json(&format!("/api/v1/items/{}", iso["id"])).await;
+        assert_eq!(
+            (
+                detail["media"]["duration_ms"].as_i64(),
+                detail["media"]["file_name"].as_str()
+            ),
+            (Some(240_000), Some("ISOFILM.ISO")),
+            "{name}"
+        );
+        let p: Value = admin
+            .post(
+                &format!("/api/v1/items/{}/playback", iso["id"]),
+                json!({"capabilities": caps, "start_ms": 130_000, "max_height": 240}),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        play_hls(&admin, &p).await;
+        let sid = p["session_id"].as_str().unwrap();
+        admin
+            .send(admin.http.delete(admin.url(&format!("/api/v1/hls/{sid}"))))
+            .await;
         assert_eq!(
             admin.get(&format!("/api/v1/items/{did}/stream")).await.status(),
             409,
@@ -875,7 +951,7 @@ async fn sign_in_scan_and_play() {
         let p: Value = admin
             .post(
                 &format!("/api/v1/items/{did}/playback"),
-                json!({"capabilities": caps, "start_ms": 5000, "max_height": 240}),
+                json!({"capabilities": caps, "start_ms": 130_000, "max_height": 240}),
             )
             .await
             .json()
@@ -1174,6 +1250,11 @@ async fn providers_and_subtitles() {
         2,
         &h264_aac,
     );
+    let vob = common::mpeg_ps(&root.join("episodes.vob"), 6);
+    common::iso(
+        &root.join("shows/Disc Show/Season 1/Disc Show S01D1.iso"),
+        &common::dvd_episodes(&vob),
+    );
     common::video(
         &root.join("anime/Sousou no Frieren/[SubsPlease] Sousou no Frieren - 01 (1080p).mkv"),
         2,
@@ -1328,6 +1409,20 @@ libraries:
             .await;
         assert_eq!(episodes[0]["title"], "Serenity", "{name}: {episodes}");
         let episode = episodes[0]["id"].as_i64().unwrap();
+
+        // A TV DVD: its two episode titles, without the "play all" title.
+        let show = find(&page["items"], "Disc Show");
+        let seasons = admin.json(&format!("/api/v1/items/{}/children", show["id"])).await;
+        let disc_episodes = admin
+            .json(&format!("/api/v1/items/{}/children", seasons[0]["id"]))
+            .await;
+        let numbers: Vec<(i64, i64)> = disc_episodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["episode_number"].as_i64().unwrap(), e["runtime_ms"].as_i64().unwrap()))
+            .collect();
+        assert_eq!(numbers, [(1, 1_500_000), (2, 1_500_000)], "{name}: {disc_episodes}");
 
         // On demand: search, download, quota, removal.
         let r = admin
