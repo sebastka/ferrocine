@@ -221,8 +221,16 @@ generated libraries.
   `metacritic`, `anilist`, `anidb`) with their scale; the single `rating`
   out of 10 is the first provider's.
 - **Lookups** use ids first (TMDB, IMDb, TVDB, AniDB, AniList, from the
-  name or the `.nfo`), then a search by title accepting only a result
-  released within a year of the year in the name. AniDB, which forbids
+  name or the `.nfo`), then a search by title and year. TMDB's movie search
+  keeps films with any release in the year asked for, but dates each by its
+  main release, which moves (Hamilton, premiered 2020, is dated by its 2025
+  re-release): its results are trusted, not filtered again on that date.
+  Candidates rank by exact title (or original title, folded as in search),
+  then a date within a year, then TMDB's order; for movies, the first three
+  are checked against the file's duration (TMDB's runtime within 30 % or
+  20 minutes, so extended cuts still fit) and the first that fits wins, the
+  first candidate otherwise. Series search filters by first air date itself,
+  so its year check stays. AniDB, which forbids
   search requests, is matched against its daily title dump (cached for a
   day) by exact normalized title. Unmatched items are tried again after
   `scanner.retry_unmatched` (7 days); an item whose providers all failed is

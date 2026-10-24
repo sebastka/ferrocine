@@ -172,7 +172,15 @@ async fn tmdb(
             assert_eq!(q["year"], "1979");
             json!({"results": [{"id": 9999, "release_date": "2010-01-01"}, {"id": 348, "release_date": "1979-05-25"}]})
         }
+        // Two films of that name and year: the second one's runtime fits the
+        // disc's 4 minutes.
+        "search/movie" if q["query"] == "Disc Film" => json!({"results": [
+            {"id": 9001, "title": "Disc Film", "release_date": "1950-01-01"},
+            {"id": 9002, "title": "Disc Film", "release_date": "1950-06-01"}
+        ]}),
         "search/movie" => json!({"results": []}),
+        "movie/9001" => json!({"id": 9001, "title": "Disc Film", "release_date": "1950-01-01", "runtime": 95}),
+        "movie/9002" => json!({"id": 9002, "title": "Disc Film", "release_date": "1950-06-01", "runtime": 4}),
         "movie/603" => json!({
             "id": 603, "title": "The Matrix (TMDB)", "overview": "Remote overview", "tagline": "Welcome to the Real World.",
             "release_date": "1999-03-30", "runtime": 136, "vote_average": 8.2, "vote_count": 25000,
@@ -868,6 +876,8 @@ async fn sign_in_scan_and_play() {
         assert_eq!(detail["media"]["container"], "dvd", "{name}");
         assert_eq!(detail["media"]["file_name"], "Disc Film (1950) NTSC DVD5", "{name}");
         assert_eq!(detail["media"]["duration_ms"], 240_000, "{name}");
+        // Of two TMDB films of that name and year, the one as long as the disc.
+        assert_eq!(detail["provider_ids"]["tmdb"], "9002", "{name}");
         let chapters: Vec<i64> = detail["media"]["chapters"]
             .as_array()
             .unwrap()
