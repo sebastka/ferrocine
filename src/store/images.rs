@@ -1,6 +1,6 @@
 //! Artwork stored in the database (resized JPEG).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sqlx::Row;
 
@@ -83,11 +83,6 @@ pub struct ImageInfo {
     pub tag: String,
 }
 
-pub struct ImageData {
-    pub tag: String,
-    pub data: Vec<u8>,
-}
-
 impl Store {
     /// Stored images of the given items: `(item, kind) → tag`.
     pub async fn image_tags(&self, items: &[i64]) -> anyhow::Result<HashMap<(i64, ImageKind), String>> {
@@ -137,21 +132,17 @@ impl Store {
         Ok(out)
     }
 
-    pub async fn image(&self, item: i64, kind: ImageKind) -> anyhow::Result<Option<ImageData>> {
-        let row = sqlx::query(self.sql("SELECT tag, data FROM images WHERE item_id = ? AND kind = ?"))
+    /// The tag of an item's image: its file in the metadata directory.
+    pub async fn image_tag(&self, item: i64, kind: ImageKind) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query(self.sql("SELECT tag FROM images WHERE item_id = ? AND kind = ?"))
             .bind(item)
             .bind(kind.as_str())
             .fetch_optional(self.pool())
             .await?;
-        Ok(match row {
-            Some(r) => Some(ImageData {
-                tag: r.try_get(0)?,
-                data: r.try_get(1)?,
-            }),
-            None => None,
-        })
+        Ok(row.map(|r| r.try_get(0)).transpose()?)
     }
 
+    /// Record an image stored in the metadata directory under `tag`.
     #[allow(clippy::too_many_arguments)]
     pub async fn put_image(
         &self,
@@ -161,15 +152,14 @@ impl Store {
         source_key: &str,
         width: u32,
         height: u32,
-        data: &[u8],
-    ) -> anyhow::Result<String> {
-        let tag = super::sha256_hex(data)[..16].to_owned();
+        tag: &str,
+    ) -> anyhow::Result<()> {
         let sql = format!(
-            "INSERT INTO images (item_id, kind, source, source_key, width, height, tag, data, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?){}",
+            "INSERT INTO images (item_id, kind, source, source_key, width, height, tag, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?){}",
             self.upsert_tail(
                 "item_id, kind",
-                &["source", "source_key", "width", "height", "tag", "data", "updated_at"]
+                &["source", "source_key", "width", "height", "tag", "updated_at"]
             )
         );
         let key: String = source_key.chars().take(512).collect();
@@ -180,12 +170,19 @@ impl Store {
             .bind(key)
             .bind(width as i32)
             .bind(height as i32)
-            .bind(&tag)
-            .bind(data.to_vec())
+            .bind(tag)
             .bind(super::now_ms())
             .execute(self.pool())
             .await?;
-        Ok(tag)
+        Ok(())
+    }
+
+    /// Every image tag in use, to keep their files.
+    pub async fn all_image_tags(&self) -> anyhow::Result<HashSet<String>> {
+        let rows = sqlx::query(self.sql("SELECT DISTINCT tag FROM images"))
+            .fetch_all(self.pool())
+            .await?;
+        rows.iter().map(|r| Ok(r.try_get(0)?)).collect()
     }
 
     pub async fn delete_image(&self, item: i64, kind: ImageKind) -> anyhow::Result<()> {

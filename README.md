@@ -7,8 +7,9 @@ A self-hosted media server written in Rust, an alternative to Jellyfin and
 Emby for people who keep their infrastructure in code. This repository is the
 server; the web app is [ferrocine-ui](https://github.com/sebastka/ferrocine-ui).
 
-- **Read-only libraries.** Ferrocine never writes next to your media. Metadata
-  and artwork (resized) live in the database, so there is nothing else to back up.
+- **Read-only libraries.** Ferrocine never writes next to your media. State and
+  metadata live in the database; artwork, seek bar previews and downloaded
+  subtitles in a metadata directory (a volume).
 - **PostgreSQL or MariaDB.** No SQLite. Instances sharing a database share
   everything and never scan the same library at once.
 - **Configuration as code.** Server, sign-in, transcoding and libraries are

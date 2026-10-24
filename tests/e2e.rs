@@ -548,6 +548,10 @@ transcoding:
   segment_seconds: 2
   x264_preset: ultrafast
 metadata:
+  directory: {temp}-metadata
+  trickplay:
+    interval: 2s
+    width: 160
   tmdb:
     api_key: eyJ.test.token
     api_url: {issuer}/tmdb
@@ -690,6 +694,35 @@ async fn sign_in_scan_and_play() {
                 .contains("/images/poster?v="),
             "{name}"
         );
+        // Seek bar previews, made in the background after the scan: 12 s of
+        // video, a frame every 2 s, 160 px wide (640 × 360 sources).
+        let mut trickplay = Value::Null;
+        for _ in 0..240 {
+            trickplay = admin.json(&format!("/api/v1/items/{}", matrix["id"])).await["trickplay"].clone();
+            if !trickplay.is_null() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert_eq!(
+            (
+                trickplay["thumbnails"].as_i64(),
+                trickplay["width"].as_i64(),
+                trickplay["height"].as_i64(),
+                trickplay["columns"].as_i64(),
+                trickplay["interval_ms"].as_i64()
+            ),
+            (Some(6), Some(160), Some(90), Some(10), Some(2000)),
+            "{name}: {trickplay}"
+        );
+        let sheet_url = trickplay["sheets"][0].as_str().unwrap().to_owned();
+        let sheet = admin.get(&sheet_url).await;
+        assert_eq!(sheet.headers()["content-type"], "image/jpeg", "{name}");
+        assert!(sheet.headers()["cache-control"].to_str().unwrap().contains("immutable"));
+        let sheet = image::load_from_memory(&sheet.bytes().await.unwrap()).unwrap();
+        assert_eq!((sheet.width(), sheet.height()), (1600, 900), "{name}");
+        let stale = sheet_url.replace("/trickplay/", "/trickplay/0000000000000000/x/");
+        assert_eq!(admin.get(&stale).await.status(), 404, "{name}");
         // TMDB: searched by title and year, artwork downloaded.
         assert_eq!(alien["official_rating"], "R", "{name}");
         assert_eq!(alien["genres"], json!(["Horror", "Science Fiction"]), "{name}");
@@ -1337,6 +1370,9 @@ transcoding:
   hw_accel: none
   temp_dir: {temp}
 metadata:
+  directory: {temp}-metadata
+  trickplay:
+    enabled: false
   tmdb:
     api_key: eyJ.test.token
     api_url: {issuer}/tmdb

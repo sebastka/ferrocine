@@ -7,7 +7,7 @@ use ferrocine::config::{LibraryConfig, LibraryKind};
 use ferrocine::media::{ItemKind, Meta, Person};
 use ferrocine::store::{
     Identity, ImageKind, ImageSource, ItemWrite, ListQuery, LoginRequest, NewSession, SortBy, Store, SummaryRow,
-    now_ms, sha256_hex,
+    Trickplay, now_ms, sha256_hex,
 };
 
 fn library(id: &str, kind: LibraryKind) -> LibraryConfig {
@@ -256,14 +256,43 @@ async fn items_lists_and_user_data() {
             "{name}"
         );
 
-        // Images.
-        let tag = store
-            .put_image(ids[0], ImageKind::Poster, ImageSource::Local, "k", 2, 3, &[1, 2, 3])
+        // Images: the rows name files of the metadata directory.
+        store
+            .put_image(
+                ids[0],
+                ImageKind::Poster,
+                ImageSource::Local,
+                "k",
+                2,
+                3,
+                "0123456789abcdef",
+            )
             .await
             .unwrap();
-        let img = store.image(ids[0], ImageKind::Poster).await.unwrap().unwrap();
-        assert_eq!((img.tag, img.data), (tag.clone(), vec![1, 2, 3]), "{name}");
+        let tag = store.image_tag(ids[0], ImageKind::Poster).await.unwrap();
+        assert_eq!(tag.as_deref(), Some("0123456789abcdef"), "{name}");
         assert_eq!(store.image_tags(&ids).await.unwrap().len(), 1, "{name}");
+        assert!(
+            store.all_image_tags().await.unwrap().contains("0123456789abcdef"),
+            "{name}"
+        );
+        // Seek bar previews.
+        let t = Trickplay {
+            tag: "00000000000000ff".into(),
+            interval_ms: 10_000,
+            width: 240,
+            height: 136,
+            columns: 10,
+            rows: 10,
+            thumbnails: 640,
+        };
+        store.put_trickplay(ids[0], &t).await.unwrap();
+        store.put_trickplay(ids[0], &t).await.unwrap();
+        assert_eq!(store.trickplay(ids[0]).await.unwrap(), Some(t), "{name}");
+        assert!(
+            store.all_trickplay_tags().await.unwrap().contains("00000000000000ff"),
+            "{name}"
+        );
 
         // A scan that sees only one item deletes the others.
         store.touch_items(&[ids[0]], 2).await.unwrap();
@@ -385,5 +414,54 @@ async fn sessions_logins_and_locks() {
         a.release().await;
         let b = store.try_lock(&lock_name).await.unwrap();
         assert!(b.is_some(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn subtitles_kept_in_the_database_move_to_files() {
+    for (name, url) in database_urls() {
+        let store = store(&url).await;
+        let lib = unique("subs");
+        store
+            .sync_libraries(&[library(&lib, LibraryKind::Movies)])
+            .await
+            .unwrap();
+        let item = store
+            .upsert_item(&write(&lib, ItemKind::Movie, "film", "Film", None))
+            .await
+            .unwrap();
+        // As an earlier version stored it: the WebVTT in the row.
+        let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO subtitles (item_id, language, source, source_id, hearing_impaired, forced, hash_match, \
+             content, created_by, created_at) VALUES ({item}, 'en', 'opensubtitles', '{}', 0, 0, 0, 'WEBVTT\n\nold', \
+             'auto', 0)",
+            unique("file")
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let pending = store.subtitles_without_files().await.unwrap();
+        let (id, vtt) = pending.into_iter().find(|(_, v)| v == "WEBVTT\n\nold").unwrap();
+        assert_eq!(store.subtitle_tag(item, id).await.unwrap(), None, "{name}");
+        store.set_subtitle_file(id, "00000000000000ee").await.unwrap();
+        assert_eq!(
+            store.subtitle_tag(item, id).await.unwrap().as_deref(),
+            Some("00000000000000ee"),
+            "{name}: {vtt}"
+        );
+        assert!(
+            !store
+                .subtitles_without_files()
+                .await
+                .unwrap()
+                .iter()
+                .any(|(i, _)| *i == id),
+            "{name}"
+        );
+        assert!(
+            store.all_subtitle_tags().await.unwrap().contains("00000000000000ee"),
+            "{name}"
+        );
     }
 }

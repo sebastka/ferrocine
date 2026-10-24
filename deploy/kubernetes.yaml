@@ -3,7 +3,19 @@
 # - the `ferrocine-config` ConfigMap (one or more *.yaml files), e.g. with
 #   kustomize's configMapGenerator from deploy/config/;
 # - the `media` PersistentVolumeClaim holding the libraries (mounted read-only);
+# - the `ferrocine-metadata` PersistentVolumeClaim for artwork, seek bar
+#   previews and downloaded subtitles (defined below: adjust its size and class);
 # - an Ingress (with TLS) to the `ferrocine-ui` Service.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ferrocine-metadata
+  labels: { app.kubernetes.io/name: ferrocine }
+spec:
+  accessModes: [ReadWriteOnce]
+  # About 3 MB of previews and artwork per film at the default settings.
+  resources: { requests: { storage: 20Gi } }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,6 +36,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # The metadata volume is made writable for that group.
+        fsGroup: 65532
         # The group owning /dev/dri/renderD* on the node (often 109 or 303).
         supplementalGroups: [303]
         seccompProfile: { type: RuntimeDefault }
@@ -55,10 +69,13 @@ spec:
             - { name: config, mountPath: /etc/ferrocine, readOnly: true }
             - { name: media, mountPath: /media, readOnly: true }
             - { name: transcodes, mountPath: /transcodes }
+            - { name: metadata, mountPath: /var/lib/ferrocine }
             - { name: tmp, mountPath: /tmp }
       volumes:
         - name: config
           configMap: { name: ferrocine-config }
+        - name: metadata
+          persistentVolumeClaim: { claimName: ferrocine-metadata }
         - name: media
           persistentVolumeClaim: { claimName: media, readOnly: true }
         - name: transcodes

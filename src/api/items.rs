@@ -84,6 +84,41 @@ pub struct ItemDetail {
     /// Ratings by source.
     ratings: Vec<crate::media::Rating>,
     media: Option<MediaOut>,
+    /// Seek bar previews, once made.
+    trickplay: Option<TrickplayOut>,
+}
+
+/// Seek bar previews: frame `n` (from 0, one every `interval_ms`) is in sheet
+/// `n / (columns × rows)`, at column `n % columns` and row
+/// `n / columns % rows`, each `width` × `height` pixels.
+#[derive(Serialize)]
+pub struct TrickplayOut {
+    interval_ms: i64,
+    width: i32,
+    height: i32,
+    columns: i32,
+    rows: i32,
+    thumbnails: i32,
+    /// Sheet URLs, in order.
+    sheets: Vec<String>,
+}
+
+impl TrickplayOut {
+    fn new(id: i64, t: crate::store::Trickplay) -> Self {
+        let per_sheet = (t.columns * t.rows).max(1);
+        let count = (t.thumbnails + per_sheet - 1) / per_sheet;
+        Self {
+            sheets: (1..=count)
+                .map(|n| format!("/api/v1/items/{id}/trickplay/{}/{n}.jpg", t.tag))
+                .collect(),
+            interval_ms: t.interval_ms,
+            width: t.width,
+            height: t.height,
+            columns: t.columns,
+            rows: t.rows,
+            thumbnails: t.thumbnails,
+        }
+    }
 }
 
 fn image_url(id: i64, kind: ImageKind, tag: &str) -> String {
@@ -421,6 +456,10 @@ pub async fn item(
             info,
         }
     });
+    let trickplay = match state.store.trickplay(row.id).await {
+        Ok(t) => t.map(|t| TrickplayOut::new(row.id, t)),
+        Err(e) => return internal(&e),
+    };
     let m = row.meta;
     Json(ItemDetail {
         summary,
@@ -440,8 +479,37 @@ pub async fn item(
         },
         ratings: m.ratings,
         media,
+        trickplay,
     })
     .into_response()
+}
+
+/// A sheet of seek bar previews: `GET /items/{id}/trickplay/{tag}/{n}.jpg`.
+pub async fn trickplay_sheet(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Path((id, tag, sheet)): Path<(i64, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = visible_item(&state, &user, id).await {
+        return resp;
+    }
+    let Some(n) = sheet.strip_suffix(".jpg").and_then(|n| n.parse::<u32>().ok()) else {
+        return not_found();
+    };
+    // Only the item's current set: the tag in the URL makes it immutable.
+    match state.store.trickplay(id).await {
+        Ok(Some(t)) if t.tag == tag => {}
+        Ok(_) => return not_found(),
+        Err(e) => return internal(&e),
+    }
+    let Some(path) = state.assets.trickplay_sheet(&tag, n) else {
+        return not_found();
+    };
+    match tokio::fs::read(&path).await {
+        Ok(data) => jpeg(format!("{tag}-{n}"), data, &headers),
+        Err(_) => not_found(),
+    }
 }
 
 pub async fn children(
@@ -474,12 +542,19 @@ pub async fn image(
     if let Err(resp) = visible_item(&state, &user, id).await {
         return resp;
     }
-    let img = match state.store.image(id, kind).await {
-        Ok(Some(i)) => i,
+    let tag = match state.store.image_tag(id, kind).await {
+        Ok(Some(t)) => t,
         Ok(None) => return not_found(),
         Err(e) => return internal(&e),
     };
-    jpeg(img.tag, img.data, &headers)
+    match state.assets.read(crate::assets::Kind::Image, &tag).await {
+        Ok(data) => jpeg(tag, data, &headers),
+        Err(e) => {
+            // Its file is gone (a directory emptied): the next scan writes it again.
+            tracing::warn!(item = id, kind = kind.as_str(), error = %format!("{e:#}"), "image file missing");
+            not_found()
+        }
+    }
 }
 
 #[derive(Deserialize)]

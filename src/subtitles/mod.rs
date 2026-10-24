@@ -151,6 +151,7 @@ pub fn query_for(row: &ItemRow, series: Option<&ItemRow>, hash: Option<String>, 
 /// configured languages. Returns the number downloaded.
 pub async fn automatic(
     store: &Store,
+    assets: &crate::assets::Assets,
     cfg: &Config,
     lib: &LibraryConfig,
     http: &reqwest::Client,
@@ -222,6 +223,7 @@ pub async fn automatic(
             };
             match os.download(choice.file_id).await {
                 Ok(d) => {
+                    let content_tag = assets.put(crate::assets::Kind::Subtitle, d.vtt.as_bytes()).await?;
                     store
                         .add_subtitle(
                             &NewSubtitle {
@@ -233,7 +235,7 @@ pub async fn automatic(
                                 hearing_impaired: choice.hearing_impaired,
                                 forced: choice.foreign_parts_only,
                                 hash_match: choice.hash_match,
-                                content: &d.vtt,
+                                content_tag: &content_tag,
                                 created_by: "auto",
                             },
                             now,

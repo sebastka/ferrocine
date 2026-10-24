@@ -28,8 +28,8 @@ pub struct NewSubtitle<'a> {
     pub hearing_impaired: bool,
     pub forced: bool,
     pub hash_match: bool,
-    /// WebVTT.
-    pub content: &'a str,
+    /// Tag of the WebVTT file in the metadata directory.
+    pub content_tag: &'a str,
     pub created_by: &'a str,
 }
 
@@ -62,14 +62,42 @@ impl Store {
         rows.iter().map(from_row).collect::<Result<_, _>>().map_err(Into::into)
     }
 
-    /// The WebVTT of a stored subtitle of an item.
-    pub async fn subtitle_content(&self, item_id: i64, id: i64) -> anyhow::Result<Option<String>> {
-        let row = sqlx::query(self.sql("SELECT content FROM subtitles WHERE id = ? AND item_id = ?"))
+    /// The tag of a stored subtitle's WebVTT file.
+    pub async fn subtitle_tag(&self, item_id: i64, id: i64) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query(self.sql("SELECT content_tag FROM subtitles WHERE id = ? AND item_id = ?"))
             .bind(id)
             .bind(item_id)
             .fetch_optional(self.pool())
             .await?;
-        Ok(row.map(|r| r.try_get(0)).transpose()?)
+        Ok(row.map(|r| r.try_get::<Option<String>, _>(0)).transpose()?.flatten())
+    }
+
+    /// Subtitles whose WebVTT is still in the database: (id, text).
+    pub async fn subtitles_without_files(&self) -> anyhow::Result<Vec<(i64, String)>> {
+        let rows = sqlx::query(
+            self.sql("SELECT id, content FROM subtitles WHERE content_tag IS NULL AND content IS NOT NULL"),
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(|r| Ok((r.try_get(0)?, r.try_get(1)?))).collect()
+    }
+
+    /// The WebVTT of a subtitle is now in the metadata directory.
+    pub async fn set_subtitle_file(&self, id: i64, tag: &str) -> anyhow::Result<()> {
+        sqlx::query(self.sql("UPDATE subtitles SET content_tag = ?, content = NULL WHERE id = ?"))
+            .bind(tag)
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Every subtitle file tag in use.
+    pub async fn all_subtitle_tags(&self) -> anyhow::Result<std::collections::HashSet<String>> {
+        let rows = sqlx::query(self.sql("SELECT DISTINCT content_tag FROM subtitles WHERE content_tag IS NOT NULL"))
+            .fetch_all(self.pool())
+            .await?;
+        rows.iter().map(|r| Ok(r.try_get(0)?)).collect()
     }
 
     /// Store a subtitle; an existing one with the same source id is kept.
@@ -89,7 +117,7 @@ impl Store {
         let release: Option<String> = s.release_name.map(|r| r.chars().take(512).collect());
         sqlx::query(self.sql(
             "INSERT INTO subtitles (item_id, language, source, source_id, release_name, hearing_impaired, forced, \
-             hash_match, content, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             hash_match, content_tag, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ))
         .bind(s.item_id)
         .bind(s.language)
@@ -99,7 +127,7 @@ impl Store {
         .bind(bool_i16(s.hearing_impaired))
         .bind(bool_i16(s.forced))
         .bind(bool_i16(s.hash_match))
-        .bind(s.content)
+        .bind(s.content_tag)
         .bind(s.created_by.chars().take(255).collect::<String>())
         .bind(now)
         .execute(self.pool())

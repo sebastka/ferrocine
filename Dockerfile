@@ -5,7 +5,7 @@
 FROM dhi.io/rust:1-alpine3.24-dev@sha256:093724ebcbc1af3c7c706e96e73c5d65e5f435477affe92215cc440b44c101b8 AS build
 
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY migrations ./migrations
 # Fully static binary: it needs nothing from the runtime image. An explicit
@@ -34,7 +34,8 @@ USER 0
 RUN --mount=type=bind,from=dhi.io/debian-base:trixie-dev@sha256:9b025768946856e44f9775005eb199f2e1820484ea27bb5c8bcbb187b80464dc,target=/x \
     --mount=type=bind,source=docker,target=/docker \
     /x/bin/sh /docker/install-packages.sh "jellyfin-ffmpeg8=$JELLYFIN_FFMPEG_VERSION" \
- && mkdir -p /usr/local/bin \
+ && mkdir -p /usr/local/bin /var/lib/ferrocine \
+ && chown 65532:65532 /var/lib/ferrocine \
  && ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ \
  && ffmpeg -hide_banner -version | head -1
 
@@ -46,7 +47,9 @@ LABEL org.opencontainers.image.title="Ferrocine" \
 COPY --from=build --chmod=0755 /ferrocine /usr/local/bin/ferrocine
 
 # Unprivileged. VA-API/QSV need /dev/dri passed in and the render group of
-# the host added (`group_add`); see docs/deployment.md.
+# the host added (`group_add`); see docs/deployment.md. Artwork, previews and
+# downloaded subtitles go to /var/lib/ferrocine (`metadata.directory`): mount
+# a volume there (a new named volume takes this directory's owner).
 USER 65532:65532
 # Mesa keeps a shader cache; with a read-only root filesystem it goes to /tmp.
 # With the NVIDIA container toolkit (`--gpus all`), mount the driver's CUDA,

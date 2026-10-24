@@ -208,6 +208,36 @@ pub struct MetadataConfig {
     pub poster_width: u32,
     /// JPEG quality of stored images.
     pub jpeg_quality: u8,
+    /// Where artwork, trickplay previews and downloaded subtitles are kept
+    /// (a volume: state and textual metadata stay in the database).
+    pub directory: PathBuf,
+    /// Seek bar previews of movies and episodes.
+    pub trickplay: TrickplayConfig,
+}
+
+/// Seek bar previews: a frame every `interval`, `width` pixels wide, tiled
+/// 10 × 10 into JPEG sheets.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+#[serde(deny_unknown_fields, default)]
+pub struct TrickplayConfig {
+    pub enabled: bool,
+    pub interval: Dur,
+    pub width: u32,
+}
+
+impl Default for TrickplayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: Dur::secs(10),
+            width: 240,
+        }
+    }
+}
+
+pub(crate) fn default_metadata_directory() -> PathBuf {
+    PathBuf::from("/var/lib/ferrocine")
 }
 
 impl Default for MetadataConfig {
@@ -225,6 +255,8 @@ impl Default for MetadataConfig {
             extract_thumbnails: true,
             poster_width: 600,
             jpeg_quality: 85,
+            directory: default_metadata_directory(),
+            trickplay: TrickplayConfig::default(),
         }
     }
 }

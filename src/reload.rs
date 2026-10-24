@@ -64,6 +64,11 @@ pub fn plan(old: &Config, new: Config) -> (Config, Report) {
     if effective.auth != old.auth {
         report.applied.push("auth");
     }
+    // The directory holds files written by the running instance.
+    if effective.metadata.directory != old.metadata.directory {
+        report.restart_required.push("metadata.directory");
+        effective.metadata.directory = old.metadata.directory.clone();
+    }
     if effective.metadata != old.metadata {
         report.applied.push("metadata");
     }

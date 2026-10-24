@@ -9,6 +9,7 @@
 mod images;
 mod items;
 mod subtitles;
+mod trickplay;
 mod users;
 
 use std::borrow::Cow;
@@ -23,6 +24,7 @@ use sqlx::{Any, AnyPool, AssertSqlSafe, Row};
 pub use images::*;
 pub use items::*;
 pub use subtitles::*;
+pub use trickplay::*;
 pub use users::*;
 
 use crate::config::{DatabaseConfig, LibraryConfig};

@@ -31,7 +31,7 @@ answer. Entries marked ⚠️ are the ones most worth reviewing together.
   `server.web_dir` is set, with the same security headers. That suits
   single-container setups and development.
 
-### D3. Configuration as code, state and metadata in SQL ⚠️
+### D3. Configuration as code, state and textual metadata in SQL, files in a directory ⚠️
 - **YAML** holds everything that is configuration: server, database,
   sign-in, transcoding, metadata providers, **libraries** and who may see them.
   There is no UI or API to change any of it.
@@ -43,9 +43,11 @@ answer. Entries marked ⚠️ are the ones most worth reviewing together.
   change the document's structure. YAML 1.2 booleans only (`no` stays a
   string). Unknown keys are errors with their path, and validation lists every
   error at once.
-- **The database** holds state and metadata: items, their metadata and
-  technical description, artwork, users (created at their first sign-in),
-  sessions, watch progress, favorites, scan state.
+- **The database** holds state and textual metadata: items, their metadata
+  and technical description, users (created at their first sign-in) and
+  their avatars, sessions, watch progress, favorites, scan state. Artwork,
+  seek bar previews and downloaded subtitles are files of the metadata
+  directory (D5), which rows name by tag.
 - **Libraries** are mirrored into a table so that items can reference them. A
   library removed from the configuration is flagged, and its items and their
   watch history are kept until it comes back. Purging them is a manual
@@ -105,26 +107,40 @@ As asked; no SQLite.
 - **MariaDB is the tested target;** `mysql://` URLs work but MySQL itself is
   not tested.
 
-### D5. Read-only libraries; all metadata, artwork included, in the database ⚠️
+### D5. Read-only libraries; binary metadata in a directory, the rest in SQL ⚠️
 - **Nothing is ever written next to the media.** Libraries can be mounted
   read-only, and the image's user could not write there anyway. `.nfo` files,
   posters and subtitles found next to the media are read (D8).
-- **Metadata and artwork both go to the database,** as preferred. Images are
-  resized (posters and thumbnails 600 px wide, backdrops 1200 px) and
-  re-encoded as JPEG (quality 85) before being stored, about 30–150 KB each.
-- **Why not a metadata directory.** The database is the one thing to back up;
-  instances sharing a database share the artwork; the container needs no
-  persistent volume. Images are served with a content tag in the URL and
-  cached by browsers for a year, so the database is read once per image and
-  browser.
-- **Cost.** Roughly 300 KB per movie (poster, backdrop, thumbnail): 3 GB for
-  10,000 movies. MariaDB's `MEDIUMBLOB` caps an image at 16 MB, far above what
-  resizing produces.
-- **Ephemeral files** are the only files written: HLS segments of running
-  playbacks (`transcoding.temp_dir`, D14), wiped at start.
-
-*Revisit when* artwork reaches tens of GB; object storage (S3) behind the same
-image endpoint would then be the next step.
+- **The metadata directory** (`metadata.directory`, a volume) holds artwork,
+  seek bar previews and downloaded subtitles. Artwork first went to the
+  database, as the one thing to back up; seek bar previews (2–6 MB per film)
+  made that too heavy, so binary metadata moved out. What grids, sorting and
+  search query (titles, overviews, people, ratings, search text) stays in the
+  database, as does all state; user avatars count as state.
+- **Content-addressed files.** An image or subtitle is named by the first 16
+  hex digits of its SHA-256 (the tag the rows and URLs carry), under a
+  two-digit fan-out, so a file is stored once however many items use it; a
+  preview set is a directory named by a tag of the file it shows and the
+  settings. Files are written to a temporary name and renamed, so readers
+  never see half a file. Files no row names are removed hourly once an hour
+  old, a grace period for instances sharing the directory.
+- **Sharing.** Instances sharing a database must share the directory (a
+  ReadWriteMany volume, NFS…). Changing `metadata.directory` needs a restart
+  and moves nothing: the next scans fetch artwork again.
+- **Backups.** The database is the state; the directory can be rebuilt by
+  scanning (artwork is fetched or extracted again, previews made again),
+  except downloaded subtitles, which would cost the provider's quota: back
+  both up, or accept losing those.
+- **Migration.** Artwork stored in the database by earlier versions is
+  dropped by a migration, which also makes every item due a provider
+  lookup: the next scan downloads remote artwork again, reads local files,
+  extracts frames (textual metadata is kept, providers only fill gaps);
+  downloaded subtitles move to files at the first start.
+- **Sizes.** Images are resized (posters and thumbnails 600 px wide, backdrops
+  1200 px) and re-encoded as JPEG (quality 85), about 30–150 KB each, some
+  300 KB per film; previews add 2–3 MB per film at 240 px.
+- **Ephemeral files** besides: HLS segments of running playbacks
+  (`transcoding.temp_dir`, D14), wiped at start.
 
 ### D6. Items: movies, and series → seasons → episodes; identity by path
 - **Kinds.** Movie libraries hold movies. Show libraries hold series, their
@@ -434,6 +450,23 @@ transcodes only), or when the core must scale out.
 *Revisit when* Intel or NVIDIA hardware is at hand: their GPU tone mappers
 would spare the CPU on 4K sources.
 
+### D16b. Seek bar previews ("trickplay")
+- **What.** A frame every 10 s (`metadata.trickplay.interval`), 240 px wide,
+  tiled 10 × 10 into JPEG sheets: hovering the seek bar shows the frame of
+  that time, with the chapter. Item details describe the set (frame size,
+  grid, count, sheet URLs, which carry the set's tag and are cached as
+  immutable).
+- **How.** A background pass after scans (and hourly) makes the previews
+  items lack, one item at a time, so it never competes with itself.
+  ffmpeg decodes keyframes only (`-skip_frame nokey`): a frame is the last
+  keyframe before its time, and a 4K film takes seconds to a few minutes.
+  Square pixels first (anamorphic DVDs), HDR tone-mapped like transcodes.
+  DVD titles are read through their byte ranges (D7). A set is named by the
+  file's identity and the settings: an unchanged file is never read twice; a
+  failure is not retried before a restart.
+- **Where.** In the metadata directory (D5): 2–3 MB per film, too much for
+  the database.
+
 ### D17. Subtitles as WebVTT, converted on demand
 - **Text subtitles** (SubRip, ASS/SSA, mov_text, WebVTT; embedded or
   sidecar) are converted by ffmpeg once, cached in memory (32 tracks), and
@@ -579,8 +612,7 @@ would spare the CPU on 4K sources.
   (D10); Chromecast/DLNA.
 - **Content:** music, books, photos, live TV; collections, multiple versions
   or parts (`cd1`/`cd2`) of a movie, people pages and their pictures.
-- **Playback:** trickplay
-  thumbnails, intro and credits detection, SyncPlay.
+- **Playback:** intro and credits detection, SyncPlay.
 - **Operations:** configuration file watching, purging removed libraries,
   sharing playback sessions across replicas.
 - **Users:** parental ratings per user.

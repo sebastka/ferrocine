@@ -109,7 +109,7 @@ pub struct Limits {
 /// with `tonemapx`, Hable with upstream ffmpeg (which lacks BT.2390).
 /// Jellyfin's `tonemapx` also applies Dolby Vision metadata; the upstream
 /// chain linearises with zimg, maps in floating point and converts back.
-fn tonemap(mapper: ToneMapper, format: &str) -> String {
+pub(crate) fn tonemap(mapper: ToneMapper, format: &str) -> String {
     match mapper {
         ToneMapper::Tonemapx => format!("tonemapx=tonemap=bt2390:desat=0:t=bt709:m=bt709:p=bt709:r=tv:format={format}"),
         ToneMapper::Zscale => format!(
