@@ -239,6 +239,28 @@ pub fn media() -> Media {
     }
     write_bytes(&disc.join("VIDEO_TS.VOB"), &vob[..2048]);
     iso(&movies.join("Iso Film (1960)").join("ISOFILM.ISO"), &dvd_film(&vob));
+    // Extras folders next to discs: their movie is the disc, not a file there.
+    video(
+        &movies
+            .join("Disc Film (1950) NTSC DVD5")
+            .join("Featurettes")
+            .join("Making of.mkv"),
+        1,
+        &h264_aac,
+    );
+    video(
+        &movies.join("Iso Film (1960)").join("Trailers").join("Teaser.mkv"),
+        1,
+        &h264_aac,
+    );
+    let mut ts = h264_aac.to_vec();
+    ts.extend(["-f", "mpegts"]);
+    video(&movies.join("Blu Film (2001)").join("BDMV/STREAM/00001.m2ts"), 1, &ts);
+    video(
+        &movies.join("Blu Film (2001)").join("Trailers").join("Trailer.mkv"),
+        1,
+        &h264_aac,
+    );
     // Extras of The Matrix: a folder, and a trailer next to it.
     video(&matrix.join("Extras").join("Behind the Story.mkv"), 1, &h264_aac);
     video(&matrix.join("The Matrix (1999)-trailer.mp4"), 1, &h264_aac);
