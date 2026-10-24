@@ -351,6 +351,8 @@ async fn os_search(headers: HeaderMap, Query(q): Query<HashMap<String, String>>)
     ) {
         (Some("78748"), _) if langs == "fr" => vec![entry("fr", 111, false)],
         (_, Some("303461")) if langs == "en" => vec![entry("en", 222, true), entry("en", 333, false)],
+        // A search by title alone finds something, as the real service does.
+        (None, None) if q.contains_key("query") => vec![entry(&langs, 444, false)],
         _ => vec![],
     };
     Json(json!({"total_count": data.len(), "data": data})).into_response()
@@ -887,6 +889,11 @@ async fn sign_in_scan_and_play() {
             "{name}"
         );
         assert_eq!(extras[0]["runtime_ms"], 90_000, "{name}");
+        // Extras have no subtitles to search, provider or not.
+        let r = admin
+            .get(&format!("/api/v1/items/{}/subtitles/search", extras[0]["id"]))
+            .await;
+        assert_eq!(r.status(), 400, "{name}");
         let p: Value = admin
             .post(
                 &format!("/api/v1/items/{}/playback", extras[0]["id"]),
@@ -1245,6 +1252,7 @@ async fn providers_and_subtitles() {
         "-shortest",
     ];
     common::video(&root.join("movies/Alien (1979)/Alien (1979).mkv"), 2, &h264_aac);
+    common::video(&root.join("movies/Alien (1979)/Alien (1979)-trailer.mkv"), 1, &h264_aac);
     common::video(
         &root.join("shows/Firefly (2002)/Season 01/Firefly - S01E01.mkv"),
         2,
@@ -1363,6 +1371,22 @@ libraries:
         for expected in [("tmdb", 8.1), ("imdb", 8.5), ("rotten_tomatoes", 93.0)] {
             assert!(ratings.contains(&expected), "{name}: {ratings:?}");
         }
+        // Its trailer, an extra: no subtitle searched, automatically or not.
+        let extras = admin.json(&format!("/api/v1/items/{}/children", alien["id"])).await;
+        let trailer = admin.json(&format!("/api/v1/items/{}", extras[0]["id"])).await;
+        assert_eq!(trailer["extra_type"], "trailer", "{name}");
+        assert!(
+            trailer["media"]["subtitles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["source"].is_null()),
+            "{name}: {trailer}"
+        );
+        let r = admin
+            .get(&format!("/api/v1/items/{}/subtitles/search?language=fr", trailer["id"]))
+            .await;
+        assert_eq!(r.status(), 400, "{name}");
         assert_eq!(alien["official_rating"], "R", "{name}");
         assert_eq!(alien["provider_ids"]["imdb"], "tt0078748", "{name}");
         let logo = admin.get(alien["images"]["logo"].as_str().expect("a logo")).await;

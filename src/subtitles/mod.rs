@@ -169,7 +169,10 @@ pub async fn automatic(
         .collect();
     let retry = cfg.scanner.retry_unmatched.as_millis_i64();
     let mut downloads = 0u32;
-    for row in rows.iter().filter(|r| r.kind.playable() && r.media.is_some()) {
+    // Movies and episodes: extras have no ids, and titles such as "Extra 1"
+    // match other films.
+    let wanted = |r: &&ItemRow| matches!(r.kind, ItemKind::Movie | ItemKind::Episode) && r.media.is_some();
+    for row in rows.iter().filter(wanted) {
         let Some(path) = row.path.as_deref() else { continue };
         let stored: Vec<String> = store
             .subtitles_of(row.id)
