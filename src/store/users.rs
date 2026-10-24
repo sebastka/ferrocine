@@ -60,7 +60,7 @@ pub struct LoginRequest {
     pub created_at: i64,
 }
 
-fn clip(s: &str, n: usize) -> String {
+pub(super) fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 

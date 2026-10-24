@@ -22,7 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::auth::oidc::Provider;
-use crate::auth::{self, Sessions};
+use crate::auth::{self, Sessions, pairing};
 use crate::config::{Config, LibraryConfig};
 use crate::media::scanner::{ScanOptions, Scanner};
 use crate::metrics::Metrics;
@@ -170,6 +170,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/me", get(items::me))
         .route("/me/avatar", get(items::avatar))
+        .route("/me/devices", get(pairing::devices))
+        .route("/me/devices/{id}", delete(pairing::revoke))
+        .route("/pair/{code}", get(pairing::show))
+        .route("/pair/{code}/approve", post(pairing::approve))
         .route("/home", get(items::home))
         .route("/search", get(items::search))
         .route("/libraries", get(items::libraries))
@@ -198,7 +202,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/reload", post(admin::reload))
         .route("/config", get(admin::config))
         .fallback(|| async { not_found() })
-        .layer(middleware::from_fn_with_state(state.clone(), auth::require_user));
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_user))
+        // Quick Connect: what a device does before it has a token.
+        .merge(
+            Router::new()
+                .route("/pair", post(pairing::start))
+                .route("/pair/token", post(pairing::token)),
+        );
 
     let mut app = Router::new()
         .nest("/api/v1", api)

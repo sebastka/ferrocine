@@ -17,6 +17,8 @@ server; the web app is [ferrocine-ui](https://github.com/sebastka/ferrocine-ui).
   database holds state and metadata only.
 - **OpenID Connect sign-in** (authorization code with PKCE). Groups from your
   provider decide who may sign in, who administers, and who sees which library.
+  TV apps sign in with Quick Connect: the TV shows a code, you approve it in
+  the web UI.
 - **Hardware transcoding.** VA-API (Intel, AMD), Quick Sync and NVENC (NVIDIA)
   in one image, each proven with a test encode at start, with a fallback to
   software per stream.

@@ -77,6 +77,9 @@ pub struct AuthConfig {
     pub session_idle: Option<Dur>,
     /// Sessions end this long after sign-in, used or not.
     pub session_lifetime: Option<Dur>,
+    /// Devices signed in with Quick Connect are signed out after this long
+    /// without use.
+    pub device_idle: Option<Dur>,
 }
 
 impl AuthConfig {
@@ -86,6 +89,10 @@ impl AuthConfig {
 
     pub fn lifetime(&self) -> Dur {
         self.session_lifetime.unwrap_or(Dur::secs(90 * 86_400))
+    }
+
+    pub fn device_idle(&self) -> Dur {
+        self.device_idle.unwrap_or(Dur::secs(90 * 86_400))
     }
 }
 

@@ -321,9 +321,8 @@ filesystems could trigger the existing scan.
   (http on localhost), with a 5 s timeout, a 2 MB cap and three redirects at
   most, and only a decoded and re-encoded image is kept. A failure never
   blocks the sign-in; without a picture the UI shows initials.
-- **Desktop and phone clients** will need bearer tokens. The verifier already
-  exists; accepting access tokens on `/api/v1` is a small addition once a
-  client exists.
+- **Apps without a browser** (TV) pair with Quick Connect (D11b) rather than
+  holding the provider's tokens.
 
 ### D11. Sessions in the database
 - **Choice.** The cookie holds 32 random bytes; the `sessions` table holds
@@ -342,6 +341,31 @@ filesystems could trigger the existing scan.
   same-origin`, or an `Origin` equal to `public_url`. Sign-out is a POST.
 - **Sign-out** deletes the session, then sends the browser to the provider's
   `end_session_endpoint` with `id_token_hint`.
+
+### D11b. Quick Connect: devices paired from a signed-in browser
+- **Choice.** A TV app asks for a pairing (`POST /pair`, no sign-in) and
+  shows an 8-character code and a QR code of the approval page; a signed-in
+  user approves it in the web UI; the app, polling with a secret, then gets a
+  token of its own, sent as `Authorization: Bearer`. The polling answers are
+  RFC 8628's (`authorization_pending`, `expired_token`).
+- **Why not the provider's device flow** (RFC 8628 at the identity
+  provider): many providers lack it (or need it enabled per client), the
+  provider's access tokens expire within minutes and need refresh handling in
+  every app, and the core would have to accept and verify them on every
+  request. Pairing works with any provider, and a TV app only ever stores one
+  opaque token. Jellyfin's Quick Connect works the same way.
+- **Tokens** are 32 random bytes; `devices` keeps their SHA-256, like
+  sessions (D11), and the same one-minute cache serves both. A device token
+  carries the groups of the user's last browser sign-in. Devices are listed
+  and signed out from the profile (`/me/devices`); a device unused for
+  `auth.device_idle` (90 days) is signed out.
+- **Safety.** Codes live 10 minutes, are single use, and use 32 unambiguous
+  characters (32⁸ ≈ 10¹² codes); approving one needs a signed-in browser
+  (a device token cannot approve), and the approval page shows the device's
+  name first, against a user being talked into approving a stranger's
+  device. Secrets and tokens are never stored in clear. At most 100 pairings
+  are open at once, as asking needs no sign-in. Token requests skip the CSRF
+  check: browsers never attach that header on their own.
 
 ### D12. Per-library access lists
 - **Choice.** `libraries[].access` lists the groups that may see a library;
@@ -368,6 +392,10 @@ filesystems could trigger the existing scan.
 - **The answer** lists the reasons, which the player shows.
 - **HDR is tone-mapped when transcoded** (D16); a remux keeps it as it is,
   for clients that play HEVC.
+- **Native clients** say more: `hdr` lists the HDR formats the display shows
+  (others are tone-mapped; browsers cannot tell, so they leave it out), and
+  `selects_tracks` means the player switches audio tracks itself, so another
+  audio track no longer forces a remux.
 
 ### D14. HLS sessions that start where the user is ⚠️
 - **Choice.** A session runs ffmpeg from the requested position (`-ss`) and
@@ -608,8 +636,8 @@ would spare the CPU on 4K sources.
 
 ## Not done yet
 
-- **Clients:** desktop, phone and TV apps; bearer access tokens for them
-  (D10); Chromecast/DLNA.
+- **Clients:** desktop and phone apps (the Android TV app pairs with Quick
+  Connect, D11b); Chromecast/DLNA.
 - **Content:** music, books, photos, live TV; collections, multiple versions
   or parts (`cd1`/`cd2`) of a movie, people pages and their pictures.
 - **Playback:** intro and credits detection, SyncPlay.

@@ -17,6 +17,15 @@ pub struct ClientCaps {
     pub video_codecs: Vec<String>,
     #[serde(default)]
     pub audio_codecs: Vec<String>,
+    /// HDR formats the client shows (`hdr10`, `hlg`, `dolby_vision`). When
+    /// given, video in another HDR format is tone-mapped; browsers, which
+    /// cannot tell, leave it out and get HDR as is.
+    #[serde(default)]
+    pub hdr: Option<Vec<String>>,
+    /// The client switches audio tracks itself (native players): direct play
+    /// whatever audio track is chosen.
+    #[serde(default)]
+    pub selects_tracks: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -134,6 +143,12 @@ fn video_ok(v: &VideoStream, caps: &ClientCaps) -> bool {
     has(&caps.video_codecs, &v.codec) && !(v.codec == "h264" && v.bit_depth.is_some_and(|b| b > 8))
 }
 
+/// An HDR format the client said it cannot show.
+fn hdr_unsupported<'a>(v: &'a VideoStream, caps: &ClientCaps) -> Option<&'a str> {
+    let format = v.hdr.as_deref()?;
+    caps.hdr.as_ref().filter(|list| !has(list, format)).map(|_| format)
+}
+
 /// Target bitrate for a height.
 fn bitrate_for(height: u32) -> u64 {
     match height {
@@ -179,15 +194,20 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
     if too_fast {
         reasons.push("the bitrate exceeds the limit".into());
     }
-    let video_playable = media.video.as_ref().is_none_or(|v| video_ok(v, &req.caps));
+    let codec_ok = media.video.as_ref().is_none_or(|v| video_ok(v, &req.caps));
     if let Some(v) = &media.video
-        && !video_playable
+        && !codec_ok
     {
         reasons.push(format!(
             "video codec {} is not supported by the client",
             describe_video(v)
         ));
     }
+    let hdr_off = media.video.as_ref().and_then(|v| hdr_unsupported(v, &req.caps));
+    if let Some(f) = hdr_off {
+        reasons.push(format!("HDR format {f} is not supported by the client"));
+    }
+    let video_playable = codec_ok && hdr_off.is_none();
     let audio_playable = audio.is_none_or(|a| has(&req.caps.audio_codecs, &a.codec));
     if let Some(a) = audio
         && !audio_playable
@@ -195,9 +215,10 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
         reasons.push(format!("audio codec {} is not supported by the client", a.codec));
     }
 
-    // Direct play: the browser plays the file as is, with its first audio track.
+    // Direct play: the client plays the file as is, with its first audio
+    // track unless it switches tracks itself.
     let container_ok = has(&req.caps.containers, &media.container);
-    let audio_is_first = audio.is_none_or(|a| Some(a.index) == first_audio);
+    let audio_is_first = req.caps.selects_tracks || audio.is_none_or(|a| Some(a.index) == first_audio);
     if !req.force_transcode
         && burn.is_none()
         && !too_tall
@@ -578,6 +599,7 @@ mod tests {
             containers: vec!["mp4".into(), "webm".into()],
             video_codecs: vec!["h264".into(), "vp9".into()],
             audio_codecs: vec!["aac".into(), "mp3".into(), "opus".into()],
+            ..Default::default()
         }
     }
 
@@ -646,6 +668,10 @@ mod tests {
         r.audio_index = Some(2);
         let p = decide_(&media("mp4", "h264", &["aac", "aac"]), &r, 2160);
         assert_eq!((p.method, p.audio), (Method::Remux, AudioPlan::Copy { index: 2 }));
+        // …unless the client switches tracks itself.
+        r.caps.selects_tracks = true;
+        let p = decide_(&media("mp4", "h264", &["aac", "aac"]), &r, 2160);
+        assert_eq!(p.method, Method::Direct);
     }
 
     #[test]
@@ -706,6 +732,18 @@ mod tests {
         let r = decide_(&m, &hevc, 2160);
         assert_eq!(r.method, Method::Remux);
         assert!(!r.tone_mapped());
+        // A client listing its HDR formats: HDR10 kept, Dolby Vision tone-mapped.
+        hevc.caps.containers.push("mkv".into());
+        hevc.caps.hdr = Some(vec!["hdr10".into(), "hlg".into()]);
+        assert_eq!(decide_(&m, &hevc, 2160).method, Method::Direct);
+        m.video.as_mut().unwrap().hdr = Some("dolby_vision".into());
+        let p = decide_(&m, &hevc, 2160);
+        assert!(p.tone_mapped(), "{p:?}");
+        assert!(p.reasons.iter().any(|r| r.contains("dolby_vision")));
+        // An SDR TV: every HDR format is tone-mapped.
+        hevc.caps.hdr = Some(vec![]);
+        m.video.as_mut().unwrap().hdr = Some("hdr10".into());
+        assert!(decide_(&m, &hevc, 2160).tone_mapped());
 
         let spec = CommandSpec {
             input: Path::new("/m/hdr.mkv"),
