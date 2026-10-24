@@ -676,7 +676,7 @@ async fn sign_in_scan_and_play() {
         let page = admin
             .json(&format!("/api/v1/libraries/{movies_id}/items?sort=title"))
             .await;
-        assert_eq!(page["total"], 6, "{name}: {page}");
+        assert_eq!(page["total"], 7, "{name}: {page}");
         let items = &page["items"];
         let matrix = find(items, "The Matrix");
         let alien = find(items, "Alien");
@@ -886,9 +886,31 @@ async fn sign_in_scan_and_play() {
             .collect();
         assert_eq!(chapters, [0, 120_000], "{name}");
         assert_eq!(detail["media"]["audio"][0]["language"], "en", "{name}");
-        // Its other titles: the 90 s extra (the 5 s logo is no extra).
+        // Its other titles: the 90 s extra (the 5 s logo is no extra); and
+        // the featurette of the folder next to `VIDEO_TS`.
         let extras = admin.json(&format!("/api/v1/items/{did}/children")).await;
-        assert_eq!(extras.as_array().unwrap().len(), 1, "{name}: {extras}");
+        let titles = |extras: &Value| {
+            let mut t: Vec<String> = extras
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| format!("{} {}", e["extra_type"].as_str().unwrap(), e["title"].as_str().unwrap()))
+                .collect();
+            t.sort();
+            t
+        };
+        assert_eq!(
+            titles(&extras),
+            ["extra Extra 1", "featurette Making of"],
+            "{name}: {extras}"
+        );
+        // The disc's own title, for the checks below.
+        let extras = json!([extras
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["title"] == "Extra 1")
+            .unwrap()]);
         assert_eq!(
             (
                 extras[0]["kind"].as_str(),
@@ -934,9 +956,15 @@ async fn sign_in_scan_and_play() {
             [("extra", "Behind the Story"), ("trailer", "The Matrix (1999)")],
             "{name}"
         );
-        // A DVD image: the same disc, read from the .iso.
+        // A DVD image: the same disc, read from the .iso, with a trailer next to it.
         let iso = find(items, "Iso Film");
         assert_eq!(iso["year"], 1960, "{name}");
+        let extras = admin.json(&format!("/api/v1/items/{}/children", iso["id"])).await;
+        assert_eq!(titles(&extras), ["extra Extra 1", "trailer Teaser"], "{name}: {extras}");
+        // A Blu-ray folder: its trailer too, though no file is next to it.
+        let blu = find(items, "Blu Film");
+        let extras = admin.json(&format!("/api/v1/items/{}/children", blu["id"])).await;
+        assert_eq!(titles(&extras), ["trailer Trailer"], "{name}: {extras}");
         let detail = admin.json(&format!("/api/v1/items/{}", iso["id"])).await;
         assert_eq!(
             (

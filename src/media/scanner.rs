@@ -589,6 +589,18 @@ impl Scanner {
             .into_iter()
             .flatten()
             .collect();
+        // Each movie's folder (a disc's: the one holding `VIDEO_TS`, `BDMV`
+        // or the image, not its stream file's) and name, for its extras.
+        let folders: Vec<(PathBuf, String, i64)> = movies
+            .iter()
+            .filter_map(|f| {
+                let id = *ids.get(&f.path)?;
+                Some(match &f.disc {
+                    Some((dir, name)) => (dir.clone(), name.to_lowercase(), id),
+                    None => (parent(&f.path), stem(&f.path).to_lowercase(), id),
+                })
+            })
+            .collect();
 
         // Their extras: other titles of the DVD, files of extras folders.
         let mut extras: Vec<ExtraFile> = Vec::new();
@@ -615,21 +627,18 @@ impl Scanner {
         for f in ctx.walk.files.iter() {
             let Some((kind, movie_dir)) = &f.extra else { continue };
             // The movie of that folder: the only one, or the one the extra is named after.
-            let candidates: Vec<(&PathBuf, i64)> = ids
-                .iter()
-                .filter(|(p, _)| p.parent() == Some(movie_dir.as_path()))
-                .map(|(p, id)| (p, *id))
-                .collect();
+            let candidates: Vec<&(PathBuf, String, i64)> =
+                folders.iter().filter(|(dir, _, _)| dir == movie_dir).collect();
             let file_stem = stem(&f.path).to_lowercase();
             let parent = match candidates.as_slice() {
-                [(_, id)] => Some(*id),
+                [(_, _, id)] => Some(*id),
                 many => many
                     .iter()
-                    .find(|(p, _)| file_stem.starts_with(&stem(p).to_lowercase()))
-                    .map(|(_, id)| *id),
+                    .find(|(_, name, _)| file_stem.starts_with(name.as_str()))
+                    .map(|(_, _, id)| *id),
             };
             let Some(parent) = parent else {
-                tracing::debug!(file = %f.path.display(), "extra without a movie; skipped");
+                tracing::info!(file = %f.path.display(), "extra without a movie in its folder; skipped");
                 continue;
             };
             let title = naming::extra_title(&stem(&f.path), kind);
