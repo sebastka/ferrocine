@@ -76,6 +76,30 @@ pub fn video(path: &Path, seconds: u32, args: &[&str]) {
     assert!(status.success(), "cannot create {}", path.display());
 }
 
+/// A DVD title set IFO with one program chain of one cell: `seconds` long,
+/// over sectors 0 to `last_sector` of the title set's VOBs.
+pub fn vts_ifo(seconds: u8, last_sector: u32) -> Vec<u8> {
+    let mut d = vec![0u8; 4096];
+    d[..12].copy_from_slice(b"DVDVIDEO-VTS");
+    d[0xCC..0xD0].copy_from_slice(&1u32.to_be_bytes()); // program chain table: sector 1
+    let (table, pgc) = (2048, 2048 + 16);
+    d[table..table + 2].copy_from_slice(&1u16.to_be_bytes());
+    d[table + 12..table + 16].copy_from_slice(&16u32.to_be_bytes());
+    let time = [0, 0, ((seconds / 10) << 4) | (seconds % 10), 0xC0];
+    d[pgc + 3] = 1;
+    d[pgc + 4..pgc + 8].copy_from_slice(&time);
+    d[pgc + 0xE8..pgc + 0xEA].copy_from_slice(&0x100u16.to_be_bytes());
+    let cell = pgc + 0x100;
+    d[cell + 4..cell + 8].copy_from_slice(&time);
+    d[cell + 20..cell + 24].copy_from_slice(&last_sector.to_be_bytes());
+    d
+}
+
+pub fn write_bytes(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
 pub fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -129,6 +153,31 @@ pub fn media() -> Media {
         &matrix.join("The Matrix (1999).en.srt"),
         "1\n00:00:01,000 --> 00:00:03,000\nWake up, Neo.\n\n2\n00:00:08,000 --> 00:00:10,000\nFollow the white rabbit.\n",
     );
+    // A DVD folder: a menu, the feature cut into two VOB parts (as on a disc,
+    // where parts stop at 1 GiB), and a tiny extra title set.
+    let disc = movies.join("Disc Film (1950) NTSC DVD5").join("VIDEO_TS");
+    let mpeg_ps = [
+        "-c:v",
+        "mpeg2video",
+        "-b:v",
+        "1M",
+        "-c:a",
+        "ac3",
+        "-shortest",
+        "-f",
+        "vob",
+    ];
+    let whole = root.join("feature.vob");
+    video(&whole, 8, &mpeg_ps);
+    let bytes = std::fs::read(&whole).unwrap();
+    let cut = bytes.len() / 2 / 2048 * 2048;
+    write_bytes(&disc.join("VTS_01_1.VOB"), &bytes[..cut]);
+    write_bytes(&disc.join("VTS_01_2.VOB"), &bytes[cut..]);
+    video(&disc.join("VTS_01_0.VOB"), 1, &mpeg_ps);
+    video(&disc.join("VIDEO_TS.VOB"), 1, &mpeg_ps);
+    video(&disc.join("VTS_02_1.VOB"), 1, &mpeg_ps);
+    write_bytes(&disc.join("VIDEO_TS.IFO"), b"DVDVIDEO-VMG");
+    write_bytes(&disc.join("VTS_01_0.IFO"), &vts_ifo(8, bytes.len() as u32 / 2048 - 1));
     // A show misplaced in the movie library, hidden by an empty .ignore (Jellyfin's convention).
     let stray = movies.join("Stray Show");
     video(&stray.join("Stray Show - S01E01.mkv"), 1, &h264_aac);

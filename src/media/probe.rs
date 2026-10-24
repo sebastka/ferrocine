@@ -94,7 +94,7 @@ impl MediaInfo {
 pub async fn probe(ffprobe: &Path, path: &Path) -> anyhow::Result<MediaInfo> {
     let mut cmd = tokio::process::Command::new(ffprobe);
     cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(path)
+        .arg(super::disc::ffmpeg_input(path))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     let out = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
@@ -109,7 +109,22 @@ pub async fn probe(ffprobe: &Path, path: &Path) -> anyhow::Result<MediaInfo> {
         );
     }
     let json: Value = serde_json::from_slice(&out.stdout).context("ffprobe returned invalid JSON")?;
-    parse(&json)
+    let mut info = parse(&json)?;
+    // No client plays a DVD's file as is (it is one part of the movie), and
+    // its timestamps restart: the IFO knows the duration.
+    if super::disc::is_dvd(path) {
+        info.container = "dvd".into();
+        let p = path.to_path_buf();
+        if let Ok(Some(title)) = tokio::task::spawn_blocking(move || super::disc::title(&p)).await {
+            let size: Option<i64> = json
+                .pointer("/format/size")
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok());
+            info.bitrate = size.map(|s| s * 8000 / title.duration_ms.max(1)).or(info.bitrate);
+            info.duration_ms = Some(title.duration_ms);
+        }
+    }
+    Ok(info)
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {

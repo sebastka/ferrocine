@@ -162,6 +162,20 @@ The scanner reads the layouts people already have:
   directory (Jellyfin matches the absolute path, which only differs for
   patterns naming a directory above it), and the search stops at the
   library path.
+- **Disc folders** (`VIDEO_TS`, `BDMV`) are one movie each, named by the
+  folder holding them. The DVD feature is the title set with the most data,
+  read whole through ffmpeg's `concat:` protocol (its VOB parts are one MPEG
+  program stream cut at 1 GiB). A DVD's timestamps restart inside the title
+  set: on a real disc ffprobe saw 49 minutes of a 113-minute film, and `-ss`
+  found nothing at some times, with the concat protocol and with Jellyfin's
+  concat demuxer alike. So the title set's IFO is read (about 100 lines, no
+  `libdvdread`, which Jellyfin's ffmpeg lacks along with its `dvdvideo`
+  demuxer): its longest program chain gives the duration, and its cells map
+  a time to a sector, where ffmpeg starts (`-skip_initial_bytes`); seeking
+  anywhere on that disc took about 0.1 s. Without an IFO, ffprobe's duration
+  and `-ss` are the fallback. The Blu-ray feature is the largest
+  `BDMV/STREAM` file. Show libraries skip disc folders, and ISO images are
+  not read.
 - **Sidecars:** `Movie.en.srt`, `Movie.fre.forced.srt` (language, forced flag,
   label); `poster`, `folder`, `cover`, `fanart`, `backdrop`, `<name>-poster`,
   `<name>-thumb`, `seasonNN-poster`.

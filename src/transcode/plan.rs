@@ -382,12 +382,7 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
             Pipeline::HybridEncode(HwKind::Nvenc) | Pipeline::Software => {}
         }
     }
-    if s.start_ms > 0 {
-        a.push("-ss".into());
-        a.push(format!("{:.3}", s.start_ms as f64 / 1000.0));
-    }
-    a.push("-i".into());
-    a.push(s.input.to_string_lossy().into_owned());
+    a.extend(crate::media::disc::input_args(s.input, s.start_ms));
     match &plan.video {
         VideoPlan::None => {}
         VideoPlan::Copy { index, hevc } => {

@@ -666,7 +666,7 @@ async fn sign_in_scan_and_play() {
         let page = admin
             .json(&format!("/api/v1/libraries/{movies_id}/items?sort=title"))
             .await;
-        assert_eq!(page["total"], 4, "{name}: {page}");
+        assert_eq!(page["total"], 5, "{name}: {page}");
         let items = &page["items"];
         let matrix = find(items, "The Matrix");
         let alien = find(items, "Alien");
@@ -856,6 +856,37 @@ async fn sign_in_scan_and_play() {
                 .any(|r| r.as_str().unwrap().contains("mpeg4"))
         );
         play_hls(&admin, &p).await;
+
+        // A DVD folder: one movie, named after its folder, both VOB parts of
+        // the feature playing as one stream, through a transcode only.
+        let disc = find(items, "Disc Film");
+        assert_eq!(disc["year"], 1950, "{name}");
+        let did = disc["id"].as_i64().unwrap();
+        let detail = admin.json(&format!("/api/v1/items/{did}")).await;
+        assert_eq!(detail["media"]["container"], "dvd", "{name}");
+        assert_eq!(detail["media"]["file_name"], "Disc Film (1950) NTSC DVD5", "{name}");
+        // The duration of the IFO, not ffprobe's estimate.
+        assert_eq!(detail["media"]["duration_ms"], 8000, "{name}");
+        assert_eq!(
+            admin.get(&format!("/api/v1/items/{did}/stream")).await.status(),
+            409,
+            "{name}"
+        );
+        let p: Value = admin
+            .post(
+                &format!("/api/v1/items/{did}/playback"),
+                json!({"capabilities": caps, "start_ms": 5000, "max_height": 240}),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(p["method"], "transcode", "{name}: {p}");
+        play_hls(&admin, &p).await;
+        let sid = p["session_id"].as_str().unwrap();
+        admin
+            .send(admin.http.delete(admin.url(&format!("/api/v1/hls/{sid}"))))
+            .await;
         // The running configuration, described, without its secrets.
         let described = admin.json("/api/v1/config").await;
         let described_text = described.to_string();

@@ -90,7 +90,12 @@ pub async fn search(
         },
         _ => None,
     };
-    let hash = match row.path.clone() {
+    // A DVD part's hash is not the movie's.
+    let hash = match row
+        .path
+        .clone()
+        .filter(|p| !crate::media::disc::is_dvd(std::path::Path::new(p)))
+    {
         Some(path) => tokio::task::spawn_blocking(move || hash_file(std::path::Path::new(&path)).ok())
             .await
             .ok()

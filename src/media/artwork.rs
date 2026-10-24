@@ -115,10 +115,8 @@ pub fn find_image(dir: &Path, names: &[String], bases: &[String]) -> Option<Path
 /// Extract one frame at `at_ms` as JPEG bytes.
 pub async fn extract_frame(ffmpeg: &Path, file: &Path, at_ms: i64, width: u32) -> anyhow::Result<Vec<u8>> {
     let mut cmd = tokio::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss"])
-        .arg(format!("{:.3}", at_ms as f64 / 1000.0))
-        .arg("-i")
-        .arg(file)
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"])
+        .args(super::disc::input_args(file, at_ms))
         .args(["-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-vf"])
         // Square pixels and the target width; tone mapping is out of scope.
         .arg(format!("scale='min({width},iw)':-2,format=yuvj420p"))

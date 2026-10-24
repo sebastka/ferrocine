@@ -92,6 +92,33 @@ episodes.
   VobSub) are listed but cannot be shown yet.
 - **Images:** jpg, jpeg, png, webp.
 
+## DVD and Blu-ray folders
+
+A disc copied as a folder is one movie, named after the folder holding it
+(put `poster.jpg`, `movie.nfo`… there):
+
+```
+movies/
+├── A Date with Judy (1948) NTSC DVD9/
+│   └── VIDEO_TS/
+│       ├── VIDEO_TS.IFO, VIDEO_TS.VOB      menu, skipped
+│       ├── VTS_01_0.VOB                    title set menu, skipped
+│       ├── VTS_01_1.VOB … VTS_01_5.VOB     the feature: the largest title set
+│       └── VTS_03_1.VOB                    a smaller title set (extra), skipped
+└── Some Film (2010)/
+    └── BDMV/STREAM/00800.m2ts              the feature: the largest stream file
+```
+
+- **DVD:** the feature is the title set with the most data; its parts play
+  as one stream, always through a transcode (browsers play no MPEG-2). Keep
+  the `.IFO` files: they give the true duration and make seeking exact (DVD
+  timestamps restart along the film). The VOB files may also sit in the
+  movie folder without `VIDEO_TS`.
+- **Blu-ray:** the largest file of `BDMV/STREAM` is played like any file.
+- Disc folders are for movie libraries: one disc holds several episodes,
+  which only its navigation files tell apart, so show libraries skip them.
+  ISO images are not read.
+
 ## Where metadata comes from
 
 1. **The `.nfo` file** wins: title, original and sort titles, year, dates,

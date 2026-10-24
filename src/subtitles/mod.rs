@@ -192,6 +192,10 @@ pub async fn automatic(
                 tracing::info!(library = %lib.id, downloads, "subtitle downloads per scan reached; the rest waits for the next scan");
                 return Ok(downloads);
             }
+            if hash.is_none() && crate::media::disc::is_dvd(Path::new(path)) {
+                // A DVD part's hash is not the movie's.
+                hash = Some(None);
+            }
             if hash.is_none() {
                 let p = path.to_owned();
                 hash = Some(tokio::task::spawn_blocking(move || hash_file(Path::new(&p)).ok()).await?);

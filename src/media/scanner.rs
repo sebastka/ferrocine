@@ -16,6 +16,7 @@ use anyhow::{Context, bail};
 use futures_util::{StreamExt, stream};
 
 use super::artwork::{self, find_image};
+use super::disc::{self, DiscFile};
 use super::dotignore::DotIgnore;
 use super::naming::{self, ProviderIds};
 use super::nfo::{self, Nfo};
@@ -47,8 +48,12 @@ pub struct ScanStats {
 struct VideoFile {
     path: PathBuf,
     root: PathBuf,
+    /// Of every part, for a disc.
     size: i64,
     mtime: i64,
+    /// For the feature of a DVD or Blu-ray folder: the movie's folder (the
+    /// one holding `VIDEO_TS` or `BDMV`).
+    disc: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -148,6 +153,7 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
             bail!("library path {} is not a directory", root.display());
         }
         let mut dot_ignore = DotIgnore::new(root);
+        let mut discs = Vec::new();
         let mut ignored = 0usize;
         let entries = walkdir::WalkDir::new(root)
             .follow_links(true)
@@ -186,14 +192,35 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
                     out.incomplete = true;
                     continue;
                 };
-                out.files.push(VideoFile {
-                    path: path.to_path_buf(),
-                    root: root.clone(),
-                    size: meta.len() as i64,
-                    mtime: mtime_ms(&meta),
-                });
+                let (size, mtime) = (meta.len() as i64, mtime_ms(&meta));
+                // Disc files are gathered: one feature per disc, below.
+                if let Some(part) = disc::classify(path) {
+                    discs.push(DiscFile {
+                        path: path.to_path_buf(),
+                        part,
+                        size,
+                        mtime,
+                    });
+                } else {
+                    out.files.push(VideoFile {
+                        path: path.to_path_buf(),
+                        root: root.clone(),
+                        size,
+                        mtime,
+                        disc: None,
+                    });
+                }
             }
             out.dirs.entry(dir).or_default().push(name);
+        }
+        for f in disc::features(std::mem::take(&mut discs)) {
+            out.files.push(VideoFile {
+                path: f.path,
+                root: root.clone(),
+                size: f.size,
+                mtime: f.mtime,
+                disc: Some(f.movie_dir),
+            });
         }
         if dot_ignore.unreadable {
             out.incomplete = true;
@@ -413,17 +440,25 @@ impl Scanner {
         let path_str = f.path.to_string_lossy().into_owned();
         let key = path_key(&ctx.lib.id, ItemKind::Movie, &path_str);
         let existing = ctx.existing.get(&key);
-        let dir = parent(&f.path);
+        // A disc is named, described and illustrated by its movie's folder.
+        let dir = f.disc.clone().unwrap_or_else(|| parent(&f.path));
         let names = ctx.names(&dir);
-        let file_stem = stem(&f.path);
-        let alone = names
-            .iter()
-            .filter(|n| {
-                naming::has_extension(Path::new(n), &naming::VIDEO_EXTENSIONS)
-                    && !naming::is_extra_file(&stem(Path::new(n)))
-            })
-            .count()
-            == 1;
+        let file_stem = match &f.disc {
+            Some(d) => d
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            None => stem(&f.path),
+        };
+        let alone = f.disc.is_some()
+            || names
+                .iter()
+                .filter(|n| {
+                    naming::has_extension(Path::new(n), &naming::VIDEO_EXTENSIONS)
+                        && !naming::is_extra_file(&stem(Path::new(n)))
+                })
+                .count()
+                == 1;
         let meta_cfg = &ctx.cfg.metadata;
         let nfo_path = meta_cfg
             .nfo
@@ -485,7 +520,9 @@ impl Scanner {
         // movie, else the file name.
         let from_file = naming::parse_title_year(&file_stem);
         let from_dir = naming::parse_title_year(&dir.file_name().map(|d| d.to_string_lossy()).unwrap_or_default());
-        let named = if alone && from_dir.year.is_some() && from_file.year.is_none() || alone && !from_dir.ids.is_empty()
+        let named = if f.disc.is_some()
+            || alone && from_dir.year.is_some() && from_file.year.is_none()
+            || alone && !from_dir.ids.is_empty()
         {
             from_dir
         } else {
@@ -573,6 +610,12 @@ impl Scanner {
         // files at the root).
         let mut series: BTreeMap<String, SeriesGroup> = BTreeMap::new();
         for f in &ctx.walk.files {
+            // One disc holds several episodes, which only its navigation
+            // files tell apart: disc folders are for movie libraries.
+            if f.disc.is_some() {
+                tracing::info!(path = %f.path.display(), "disc folders are not read in show libraries; skipped");
+                continue;
+            }
             let Ok(rel) = f.path.strip_prefix(&f.root) else {
                 continue;
             };

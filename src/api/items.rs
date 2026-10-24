@@ -403,11 +403,17 @@ pub async fn item(
         info.subtitles
             .extend(stored.iter().map(crate::api::subtitles::stream_of));
         MediaOut {
+            // A disc's file is one of many: the movie's folder names it.
             file_name: row
                 .path
                 .as_deref()
-                .and_then(|p| std::path::Path::new(p).file_name())
-                .map(|f| f.to_string_lossy().into_owned())
+                .map(std::path::Path::new)
+                .and_then(|p| match crate::media::disc::classify(p) {
+                    Some(part) => crate::media::disc::movie_dir(p, part)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned()),
+                    None => p.file_name().map(|f| f.to_string_lossy().into_owned()),
+                })
                 .unwrap_or_default(),
             size: row.file_size,
             info,
