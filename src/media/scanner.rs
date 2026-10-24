@@ -762,7 +762,10 @@ impl Scanner {
         let mut remote = None;
         let (mut fetched_at, mut matched) = existing.map_or((None, false), |e| (e.remote_fetched_at, e.remote_matched));
         if remote_due && let Some(providers) = &ctx.providers {
-            match providers.movie(&meta, ctx.lib).await {
+            // The file's duration tells films of the same name apart.
+            let mut hint = meta.clone();
+            hint.runtime_ms = media.duration_ms.or(hint.runtime_ms);
+            match providers.movie(&hint, ctx.lib).await {
                 Ok(r) => {
                     fetched_at = Some(now);
                     matched = r.is_some();

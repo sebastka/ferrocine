@@ -148,8 +148,12 @@ movies/
    (first when `episode_order` is not `aired`), TMDB, TheTVDB; then OMDb
    (ratings) and fanart.tv (logos, backdrops). They are searched by provider
    id first (from the name or the `.nfo`, e.g. `{tmdb-603}`, `[imdbid-tt0133093]`,
-   `{tvdb-81189}`), then by title, accepting only a result released within a
-   year of the year in the name. A title from the file name is replaced, by
+   `{tvdb-81189}`), then by title and year: a result with exactly that title
+   (or original title) first, then one dated within a year, and, for movies,
+   one whose length fits the file's (so "Hamilton (2020)" is the filmed
+   musical, not a documentary of the same year). If a movie is still matched
+   wrongly, put its id in the name (`{tmdb-556574}`) or its `.nfo`, then
+   refresh its metadata. A title from the file name is replaced, by
    the original title when the work's original language is in
    `prefer_original_title` (globally under `metadata`, or per library).
 3. **The file name** gives the title and year when nothing else does; ffprobe

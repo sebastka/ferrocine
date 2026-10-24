@@ -109,16 +109,56 @@ fn tv_certification(v: &Value, country: &str) -> Option<String> {
         .and_then(|r| s(r, "rating"))
 }
 
-/// The search result to trust: with a year, the first one released within a
-/// year of it; without, the first one.
-fn pick<'a>(results: &'a [Value], year: Option<i32>, date_key: &str) -> Option<&'a Value> {
-    match year {
-        None => results.first(),
-        Some(y) => results
-            .iter()
-            .find(|r| year_of(r.get(date_key).and_then(Value::as_str)).is_some_and(|ry| (ry - y).abs() <= 1)),
-    }
+/// How a search was made and how to read its results.
+struct Search<'a> {
+    /// The name from the file (or `.nfo`).
+    title: &'a str,
+    year: Option<i32>,
+    /// `release_date` or `first_air_date`.
+    date_key: &'a str,
+    /// `title`/`original_title` or `name`/`original_name`.
+    title_keys: [&'a str; 2],
+    /// TMDB already kept results of that year: a movie search's `year` keeps
+    /// films with any release that year, whatever their main date (a 2020
+    /// premiere re-released in 2025 is dated 2025).
+    year_filtered: bool,
 }
+
+/// The search results worth trying, best first: exact title matches
+/// (ignoring case, accents and punctuation), then results dated within a
+/// year of the name's, then TMDB's order. Results dated otherwise are only
+/// dropped when TMDB did not filter by year itself.
+fn candidates<'a>(results: &'a [Value], s: &Search<'_>) -> Vec<&'a Value> {
+    let dated = |r: &Value| {
+        s.year
+            .is_none_or(|y| year_of(r.get(s.date_key).and_then(Value::as_str)).is_some_and(|ry| (ry - y).abs() <= 1))
+    };
+    let wanted = crate::search::fold(s.title);
+    let exact = |r: &&Value| {
+        s.title_keys.iter().any(|k| {
+            r.get(*k)
+                .and_then(Value::as_str)
+                .is_some_and(|t| crate::search::fold(t) == wanted)
+        })
+    };
+    let mut kept: Vec<&Value> = results.iter().filter(|r| s.year_filtered || dated(r)).collect();
+    // Stable: TMDB's order within each rank.
+    kept.sort_by_key(|r| (!exact(r), !dated(r)));
+    kept
+}
+
+/// Whether TMDB's runtime (minutes) fits a file's duration: within 30 % or
+/// 20 minutes (extended cuts, credits, PAL speed-up). Unknown fits.
+fn runtime_fits(runtime_min: Option<i64>, file_ms: Option<i64>) -> bool {
+    let (Some(r), Some(f)) = (runtime_min.filter(|r| *r > 0), file_ms.filter(|f| *f > 0)) else {
+        return true;
+    };
+    let diff = (r * 60_000 - f).abs();
+    diff <= (r * 60_000 * 3 / 10).max(20 * 60_000)
+}
+
+/// Candidates whose runtime is checked against the file's.
+const RUNTIME_CHECKS: usize = 3;
 
 impl Tmdb {
     pub fn new(config: TmdbConfig, http: reqwest::Client) -> Self {
@@ -203,8 +243,11 @@ impl Tmdb {
             .map(|i| i.to_string()))
     }
 
+    /// A movie: by its ids, else searched by name. `hint.runtime_ms` is the
+    /// file's duration, which discards results of another length.
     pub async fn movie(&self, hint: &Meta, language: Option<&str>) -> anyhow::Result<Option<RemoteItem>> {
         let lang = self.language(language).to_owned();
+        let mut ids: Vec<String> = Vec::new();
         let mut id = hint.tmdb_id.clone();
         if id.is_none()
             && let Some(imdb) = &hint.imdb_id
@@ -223,6 +266,7 @@ impl Tmdb {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let mut year_filtered = hint.year.is_some();
             if results.is_empty() && hint.year.is_some() {
                 // The year in the name may be off (re-release, festival year).
                 let q = [("query", hint.title.clone()), ("language", lang.clone())];
@@ -231,20 +275,43 @@ impl Tmdb {
                     .await?
                     .and_then(|v| v.get("results").and_then(Value::as_array).cloned())
                     .unwrap_or_default();
+                year_filtered = false;
             }
-            id = pick(&results, hint.year, "release_date")
-                .and_then(|r| r.get("id"))
-                .and_then(Value::as_i64)
-                .map(|i| i.to_string());
+            let search = Search {
+                title: &hint.title,
+                year: hint.year,
+                date_key: "release_date",
+                title_keys: ["title", "original_title"],
+                year_filtered,
+            };
+            ids = candidates(&results, &search)
+                .iter()
+                .filter_map(|r| r.get("id").and_then(Value::as_i64))
+                .map(|i| i.to_string())
+                .collect();
         }
-        let Some(id) = id else { return Ok(None) };
+        let ids: Vec<String> = id.into_iter().chain(ids).collect();
         let q = [
             ("language", lang.clone()),
             ("append_to_response", "credits,release_dates".to_owned()),
         ];
-        let Some(v) = self.get(&format!("/movie/{id}"), &q).await? else {
-            return Ok(None);
-        };
+        // The first candidate whose runtime fits the file's, else the first.
+        let mut chosen = None;
+        for id in ids.iter().take(RUNTIME_CHECKS) {
+            let Some(v) = self.get(&format!("/movie/{id}"), &q).await? else {
+                continue;
+            };
+            let fits = runtime_fits(v.get("runtime").and_then(Value::as_i64), hint.runtime_ms);
+            if !fits {
+                tracing::debug!(title = %hint.title, candidate = %id, "runtime differs from the file's; trying the next result");
+            }
+            if fits {
+                chosen = Some(v);
+                break;
+            }
+            chosen.get_or_insert(v);
+        }
+        let Some(v) = chosen else { return Ok(None) };
         let release = s(&v, "release_date");
         Ok(Some(RemoteItem {
             meta: Meta {
@@ -262,7 +329,7 @@ impl Tmdb {
                 genres: names(&v, "genres"),
                 studios: names(&v, "production_companies"),
                 people: people(v.get("credits")),
-                tmdb_id: Some(id),
+                tmdb_id: v.get("id").and_then(Value::as_i64).map(|i| i.to_string()),
                 imdb_id: s(&v, "imdb_id"),
                 tvdb_id: None,
                 anidb_id: None,
@@ -307,7 +374,16 @@ impl Tmdb {
                 .await?
                 .and_then(|v| v.get("results").and_then(Value::as_array).cloned())
                 .unwrap_or_default();
-            id = pick(&results, hint.year, "first_air_date")
+            let search = Search {
+                title: &hint.title,
+                year: hint.year,
+                date_key: "first_air_date",
+                title_keys: ["name", "original_name"],
+                // `first_air_date_year` filters on the date the results carry.
+                year_filtered: false,
+            };
+            id = candidates(&results, &search)
+                .first()
                 .and_then(|r| r.get("id"))
                 .and_then(Value::as_i64)
                 .map(|i| i.to_string());
@@ -446,16 +522,76 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn search<'a>(title: &'a str, year: Option<i32>, year_filtered: bool) -> Search<'a> {
+        Search {
+            title,
+            year,
+            date_key: "release_date",
+            title_keys: ["title", "original_title"],
+            year_filtered,
+        }
+    }
+
+    fn ids(c: Vec<&Value>) -> Vec<i64> {
+        c.iter().map(|r| r["id"].as_i64().unwrap()).collect()
+    }
+
     #[test]
-    fn picks_by_year() {
+    fn candidates_by_year_without_tmdb_filter() {
         let r = [
-            json!({"id": 1, "release_date": "2019-05-01"}),
-            json!({"id": 2, "release_date": "1999-03-31"}),
+            json!({"id": 1, "title": "A", "release_date": "2019-05-01"}),
+            json!({"id": 2, "title": "B", "release_date": "1999-03-31"}),
         ];
-        assert_eq!(pick(&r, Some(1999), "release_date").unwrap()["id"], 2);
-        assert_eq!(pick(&r, Some(2020), "release_date").unwrap()["id"], 1);
-        assert!(pick(&r, Some(1950), "release_date").is_none());
-        assert_eq!(pick(&r, None, "release_date").unwrap()["id"], 1);
+        assert_eq!(ids(candidates(&r, &search("X", Some(1999), false))), [2]);
+        assert_eq!(ids(candidates(&r, &search("X", Some(2020), false))), [1]);
+        assert!(candidates(&r, &search("X", Some(1950), false)).is_empty());
+        assert_eq!(ids(candidates(&r, &search("X", None, false))), [1, 2]);
+    }
+
+    #[test]
+    fn hamilton_is_hamilton() {
+        // TMDB's answer to "Hamilton", year 2020 (October 2026): the filmed
+        // musical premiered in 2020 but is dated by its 2025 re-release.
+        let r = [
+            json!({"id": 556574, "title": "Hamilton", "original_title": "Hamilton", "release_date": "2025-09-05"}),
+            json!({"id": 510026, "title": "Bethany Hamilton: Unstoppable", "original_title": "Bethany Hamilton: Unstoppable", "release_date": "2019-07-12"}),
+            json!({"id": 723212, "title": "Hamilton: History Has Its Eyes On You", "release_date": "2020-07-10"}),
+        ];
+        assert_eq!(ids(candidates(&r, &search("Hamilton", Some(2020), true)))[0], 556574);
+        // An exact title comes first whatever TMDB's order.
+        let reordered = [r[1].clone(), r[2].clone(), r[0].clone()];
+        assert_eq!(
+            ids(candidates(&reordered, &search("hamilton", Some(2020), true))),
+            [556574, 510026, 723212]
+        );
+        // By the original title too, accents and punctuation aside.
+        let amelie = [
+            json!({"id": 1, "title": "Amelie From Montmartre", "original_title": "x"}),
+            json!({"id": 194, "title": "Amélie", "original_title": "Le Fabuleux Destin d'Amélie Poulain"}),
+        ];
+        assert_eq!(
+            ids(candidates(
+                &amelie,
+                &search("Le fabuleux destin d amelie poulain", None, false)
+            ))[0],
+            194
+        );
+    }
+
+    #[test]
+    fn runtimes_fit_within_reason() {
+        let minutes = |m: i64| Some(m * 60_000);
+        // Hamilton's file (2 h 40) against Hamilton and Bethany Hamilton.
+        assert!(runtime_fits(Some(160), Some(9_615_000)));
+        assert!(!runtime_fits(Some(99), Some(9_615_000)));
+        // An extended cut, a short film's credits, PAL speed-up.
+        assert!(runtime_fits(Some(178), minutes(228)));
+        assert!(runtime_fits(Some(8), minutes(25)));
+        assert!(runtime_fits(Some(100), minutes(96)));
+        assert!(!runtime_fits(Some(30), minutes(120)));
+        // Unknown on either side fits.
+        assert!(runtime_fits(None, minutes(100)) && runtime_fits(Some(0), minutes(100)));
+        assert!(runtime_fits(Some(100), None));
     }
 
     #[test]
