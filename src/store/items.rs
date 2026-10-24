@@ -38,7 +38,7 @@ const ITEM_COLUMNS: &str = "id, library_id, kind, parent_id, series_id, path_key
      original_title, year, premiere_date, season_number, episode_number, overview, tagline, rating_x100, \
      official_rating, genres, studios, people, tmdb_id, imdb_id, tvdb_id, runtime_ms, file_size, file_mtime, \
      media, local_key, remote_fetched_at, remote_matched, added_at, content_added_at, ratings, anidb_id, anilist_id, \
-     original_language, provider_title";
+     original_language, provider_title, extra_type";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemRow {
@@ -60,6 +60,8 @@ pub struct ItemRow {
     pub remote_matched: bool,
     pub added_at: i64,
     pub content_added_at: i64,
+    /// Of an extra: `trailer`, `featurette`, `extra`…
+    pub extra_type: Option<String>,
 }
 
 fn json_list<T: serde::de::DeserializeOwned>(s: Option<String>) -> Vec<T> {
@@ -124,6 +126,7 @@ impl ItemRow {
             remote_matched: r.try_get::<i16, _>(30)? != 0,
             added_at: r.try_get(31)?,
             content_added_at: r.try_get(32)?,
+            extra_type: r.try_get(38)?,
         })
     }
 }
@@ -149,6 +152,8 @@ pub struct ItemWrite {
     /// Used when the item is new; an existing item keeps its date.
     pub added_at: i64,
     pub seen_scan: i64,
+    /// Of an extra: `trailer`, `featurette`, `extra`…
+    pub extra_type: Option<String>,
 }
 
 /// One row of a list, before images and counts are attached.
@@ -171,6 +176,7 @@ pub struct SummaryRow {
     pub premiere_date: Option<String>,
     pub added_at: i64,
     pub user: UserData,
+    pub extra_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -184,7 +190,7 @@ pub struct UserData {
 
 const SUMMARY_SELECT: &str = "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.parent_id, i.series_id, s.title, \
      i.season_number, i.episode_number, i.runtime_ms, i.rating_x100, i.official_rating, i.genres, i.premiere_date, \
-     i.added_at, ud.position_ms, ud.played, ud.play_count, ud.favorite, ud.last_played_at \
+     i.added_at, ud.position_ms, ud.played, ud.play_count, ud.favorite, ud.last_played_at, i.extra_type \
      FROM items i LEFT JOIN items s ON s.id = i.series_id \
      LEFT JOIN user_data ud ON ud.item_id = i.id AND ud.user_id = ?";
 
@@ -214,6 +220,7 @@ impl SummaryRow {
                 favorite: r.try_get::<Option<i16>, _>(19)?.unwrap_or(0) != 0,
                 last_played_at: r.try_get(20)?,
             },
+            extra_type: r.try_get(21)?,
         })
     }
 }
@@ -316,15 +323,16 @@ impl Store {
             "anilist_id",
             "original_language",
             "provider_title",
+            "extra_type",
         ];
         let sql = format!(
             "INSERT INTO items (library_id, kind, parent_id, series_id, path_key, path, title, sort_title, \
              original_title, year, premiere_date, season_number, episode_number, overview, tagline, rating_x100, \
              official_rating, genres, studios, people, tmdb_id, imdb_id, tvdb_id, runtime_ms, file_size, \
              file_mtime, media, local_key, remote_fetched_at, remote_matched, added_at, content_added_at, \
-             updated_at, seen_scan, ratings, anidb_id, anilist_id, original_language, provider_title) \
+             updated_at, seen_scan, ratings, anidb_id, anilist_id, original_language, provider_title, extra_type) \
              VALUES ({}){}",
-            placeholders(39),
+            placeholders(40),
             self.upsert_tail("path_key", &updated)
         );
         let m = &w.meta;
@@ -373,6 +381,7 @@ impl Store {
             .bind(m.anilist_id.as_deref().map(|t| truncate(t, 32)))
             .bind(m.original_language.as_deref().map(|t| truncate(t, 8)))
             .bind(m.provider_title.as_deref().map(|t| truncate(t, 512)))
+            .bind(w.extra_type.as_deref().map(|t| truncate(t, 32)))
             .execute(self.pool())
             .await
             .with_context(|| format!("cannot store item {:?}", w.meta.title))?;
@@ -450,10 +459,16 @@ impl Store {
     }
 
     /// Delete the items of a library that scan `generation` did not see:
-    /// episodes first, then seasons, series and movies.
+    /// extras and episodes first, then seasons, series and movies.
     pub async fn delete_unseen(&self, library: &str, generation: i64) -> anyhow::Result<u64> {
         let mut total = 0;
-        for kind in [ItemKind::Episode, ItemKind::Season, ItemKind::Series, ItemKind::Movie] {
+        for kind in [
+            ItemKind::Extra,
+            ItemKind::Episode,
+            ItemKind::Season,
+            ItemKind::Series,
+            ItemKind::Movie,
+        ] {
             let r = sqlx::query(self.sql("DELETE FROM items WHERE library_id = ? AND kind = ? AND seen_scan < ?"))
                 .bind(library)
                 .bind(kind.code())

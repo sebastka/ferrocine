@@ -48,6 +48,7 @@ fn write(lib: &str, kind: ItemKind, key: &str, title: &str, year: Option<i32>) -
         remote_matched: false,
         added_at: now_ms(),
         seen_scan: 1,
+        extra_type: None,
     }
 }
 

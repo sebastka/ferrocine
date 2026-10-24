@@ -126,7 +126,9 @@ Starts a scan; `202`. `?refresh_metadata=true` also refreshes metadata of unchan
 }
 ```
 
-- `kind`: `movie`, `series`, `season`, `episode`.
+- `kind`: `movie`, `series`, `season`, `episode`, `extra`.
+- `extra_type` (extras only): `trailer`, `featurette`, `behind_the_scenes`, `deleted_scene`,
+  `interview`, `scene`, `short` or `extra` (DVD titles, `Extras` folders).
 - `series_*`, `season_number`, `episode_number` only for seasons and episodes (`null` otherwise).
   `season_number` 0 is "Specials".
 - `images.*` are URLs or `null`; the `v` parameter changes when the image does, so the images can
@@ -169,15 +171,19 @@ An ItemSummary plus:
 ```
 
 `media` is `null` for series and seasons. `video` may be `null` (audio-only file). `hdr` is
-`null`, `hdr10`, `hlg` or `dolby_vision`. Subtitles with `text: false` (PGS, VobSub) cannot be
-shown by the web player yet. External subtitle files get indices from 1000, downloaded subtitles
-from 1 000 000 (`source: "opensubtitles"`, `null` for the others).
+`null`, `hdr10`, `hlg` or `dolby_vision`. Subtitles with `text: false` (PGS, VobSub, DVD) are
+bitmaps: they are shown by burning them into the picture (`burn_subtitle` in a playback request).
+External subtitle files get indices from 1000, DVD subtitles the disc declares but that were not
+met while probing from 2000, downloaded subtitles from 1 000 000 (`source: "opensubtitles"`,
+`null` for the others). `chapters` is `[{ "start_ms": 0, "title": "…" | null }, …]`. Streams may
+carry `stream_id` (the container's id, e.g. `0x80` on a DVD). `file_name` of a DVD is its folder
+or image.
 
 `ratings` sources: `tmdb`, `imdb`, `rotten_tomatoes`, `metacritic`, `anilist`, `anidb`.
 
 ### `GET /api/v1/items/{id}/children`
 
-Seasons of a series, or episodes of a season, in order: `[ItemSummary, …]`.
+Seasons of a series, episodes of a season, or extras of a movie, in order: `[ItemSummary, …]`.
 
 ### `GET /api/v1/items/{id}/images/{kind}`
 
@@ -232,6 +238,7 @@ The client says what it can play; the server picks the cheapest method.
   "max_height": null,
   "max_bitrate": null,
   "force_transcode": false,
+  "burn_subtitle": null,
   "capabilities": {
     "containers": ["mp4", "webm"],
     "video_codecs": ["h264", "hevc", "vp9", "av1"],
@@ -242,6 +249,9 @@ The client says what it can play; the server picks the cheapest method.
 
 - `audio_index`: a `media.audio[].index`; default: the default track.
 - `max_height`, `max_bitrate` (bits/s): limits; exceeding them forces a transcode.
+- `burn_subtitle`: a `media.subtitles[].index` with `text: false`, drawn into the picture (forces a
+  transcode; the answer's `burned_subtitle` says so). `400` for a text subtitle (those come as
+  WebVTT).
 
 Answer:
 
@@ -254,6 +264,7 @@ Answer:
   "duration_ms": 3480000,
   "hw_accel": "vaapi",
   "tone_mapping": false,
+  "burned_subtitle": null,
   "reasons": ["video codec mpeg4 is not supported by the client"]
 }
 ```

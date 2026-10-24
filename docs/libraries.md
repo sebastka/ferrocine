@@ -24,9 +24,12 @@ movies/
   provider id (`{tmdb-…}`, `[imdbid-tt…]`, `{tvdb-…}`). `poster.jpg`,
   `fanart.jpg` and `movie.nfo` apply when the directory holds a single movie;
   otherwise use `<name>-poster.jpg` and `<name>.nfo`.
-- Ignored: hidden files, `Extras`, `Featurettes`, `Behind The Scenes`,
-  `Deleted Scenes`, `Trailers`, `Samples`… directories, and files ending in
-  `-trailer` or `-sample`.
+- **Extras:** files in `Extras`, `Featurettes`, `Behind The Scenes`,
+  `Deleted Scenes`, `Interviews`, `Scenes`, `Shorts`, `Trailers` or `Other`
+  folders of the movie's folder, and files named like `<movie>-trailer`
+  (`-featurette`, `-behindthescenes`, `-deleted`, `-interview`, `-scene`,
+  `-short`, `-extra`), are extras of the movie, shown under it.
+- Ignored: hidden files, `Samples` directories and `-sample` files.
 
 ## `.ignore` files
 
@@ -89,35 +92,52 @@ episodes.
   flv, ogv, 3gp, vob, divx.
 - **Subtitles:** embedded text tracks (SubRip, ASS/SSA, mov_text, WebVTT),
   and srt, vtt, ass, ssa files next to the video. Bitmap subtitles (PGS,
-  VobSub) are listed but cannot be shown yet.
+  VobSub, DVD) are burned into the picture when chosen.
 - **Images:** jpg, jpeg, png, webp.
 
-## DVD and Blu-ray folders
+## DVD folders and images, Blu-ray folders
 
-A disc copied as a folder is one movie, named after the folder holding it
-(put `poster.jpg`, `movie.nfo`… there):
+A DVD is read through its information files (`VIDEO_TS.IFO`,
+`VTS_NN_0.IFO`), as a folder or as an image (`.iso`); keep them with the
+VOBs. Its longest title is the movie, named after the folder holding it, or
+after the image when the image sits at the library's root or among other
+videos (put `poster.jpg`, `movie.nfo`… next to it):
 
 ```
 movies/
 ├── A Date with Judy (1948) NTSC DVD9/
-│   └── VIDEO_TS/
-│       ├── VIDEO_TS.IFO, VIDEO_TS.VOB      menu, skipped
-│       ├── VTS_01_0.VOB                    title set menu, skipped
-│       ├── VTS_01_1.VOB … VTS_01_5.VOB     the feature: the largest title set
-│       └── VTS_03_1.VOB                    a smaller title set (extra), skipped
+│   └── VIDEO_TS/                    title 1: the film (113 min, 28 chapters)
+│                                    titles 5, 8–10: its extras
+├── Rambo (2008)/RAMBO.ISO           the same, from an image
 └── Some Film (2010)/
-    └── BDMV/STREAM/00800.m2ts              the feature: the largest stream file
+    └── BDMV/STREAM/00800.m2ts       Blu-ray: the largest stream file
 ```
 
-- **DVD:** the feature is the title set with the most data; its parts play
-  as one stream, always through a transcode (browsers play no MPEG-2). Keep
-  the `.IFO` files: they give the true duration and make seeking exact (DVD
-  timestamps restart along the film). The VOB files may also sit in the
-  movie folder without `VIDEO_TS`.
-- **Blu-ray:** the largest file of `BDMV/STREAM` is played like any file.
-- Disc folders are for movie libraries: one disc holds several episodes,
-  which only its navigation files tell apart, so show libraries skip them.
-  ISO images are not read.
+- **The movie:** the longest title, played exactly: duration, chapters,
+  audio and subtitle languages come from the disc, and seeking jumps to the
+  right place (DVD timestamps restart along a film, so they cannot be
+  trusted). Logos and warnings of under two seconds at either end of a
+  title are left out. DVDs always play through a transcode (no browser
+  plays MPEG-2).
+- **Extras:** the other titles of a minute or more, with sound, that are not
+  part of the film (scene selections replay its cells); they appear under
+  the movie as "Extra 1", "Extra 2"….
+- **Shows:** in a show library, each title of five minutes or more is an
+  episode, except "play all" titles; episodes are numbered on in disc order
+  within the season:
+
+  ```
+  shows/Firefly/Season 1/Disc 1/VIDEO_TS
+  shows/Firefly/Season 1/Disc 2/VIDEO_TS
+  shows/Firefly/Firefly S01D3.iso
+  ```
+
+  The season comes from a `Season N` folder or from the disc's name
+  (`S01D3`, `Season 1 Disc 3`). Disc numbers sort naturally (2 before 10).
+- **Without `VIDEO_TS.IFO`:** the title set with the most data is the movie,
+  read whole.
+- **Blu-ray:** the largest file of `BDMV/STREAM` is the movie. Blu-ray
+  images (UDF only) are not read.
 
 ## Where metadata comes from
 

@@ -20,11 +20,23 @@ pub struct MediaInfo {
     pub audio: Vec<AudioStream>,
     #[serde(default)]
     pub subtitles: Vec<SubtitleStream>,
+    #[serde(default)]
+    pub chapters: Vec<Chapter>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Chapter {
+    pub start_ms: i64,
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VideoStream {
     pub index: i32,
+    /// The container's stream id (`0x1e0` in an MPEG program stream): DVD
+    /// streams are addressed by it, as their order varies along a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
     pub codec: String,
     pub profile: Option<String>,
     pub level: Option<i32>,
@@ -40,6 +52,10 @@ pub struct VideoStream {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioStream {
     pub index: i32,
+    /// The container's stream id (`0x1e0` in an MPEG program stream): DVD
+    /// streams are addressed by it, as their order varies along a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
     pub codec: String,
     pub profile: Option<String>,
     pub channels: Option<i32>,
@@ -50,8 +66,13 @@ pub struct AudioStream {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SubtitleStream {
-    /// Stream index in the file; external files are numbered from 1000.
+    /// Stream index in the file; external files are numbered from 1000, DVD
+    /// subtitles the disc declares but ffprobe did not meet from 2000.
     pub index: i32,
+    /// The container's stream id (`0x1e0` in an MPEG program stream): DVD
+    /// streams are addressed by it, as their order varies along a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
     pub codec: String,
     pub language: Option<String>,
     pub title: Option<String>,
@@ -71,6 +92,9 @@ pub struct SubtitleStream {
 /// Index of the first external subtitle.
 pub const EXTERNAL_SUBTITLE_BASE: i32 = 1000;
 
+/// Index of the first DVD subtitle declared by the disc but not met by ffprobe.
+pub const DISC_SUBTITLE_BASE: i32 = 2000;
+
 const TEXT_SUBTITLES: [&str; 7] = ["subrip", "ass", "ssa", "webvtt", "mov_text", "text", "srt"];
 
 pub fn is_text_subtitle(codec: &str) -> bool {
@@ -88,13 +112,38 @@ impl MediaInfo {
     pub fn subtitle(&self, index: i32) -> Option<&SubtitleStream> {
         self.subtitles.iter().find(|s| s.index == index)
     }
+
+    /// Stream index → stream id, for the streams that have one.
+    pub fn stream_ids(&self) -> std::collections::HashMap<i32, String> {
+        let video = self.video.iter().map(|v| (v.index, &v.stream_id));
+        let audio = self.audio.iter().map(|a| (a.index, &a.stream_id));
+        let subtitles = self.subtitles.iter().map(|s| (s.index, &s.stream_id));
+        video
+            .chain(audio)
+            .chain(subtitles)
+            .filter_map(|(i, id)| Some((i, id.clone()?)))
+            .collect()
+    }
 }
 
 /// Run ffprobe on `path`.
 pub async fn probe(ffprobe: &Path, path: &Path) -> anyhow::Result<MediaInfo> {
     let mut cmd = tokio::process::Command::new(ffprobe);
-    cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(super::disc::ffmpeg_input(path))
+    let dvd = super::disc::is_dvd(path);
+    cmd.args([
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+    ]);
+    if dvd {
+        // Subtitle streams of a DVD may first appear well into the title.
+        cmd.args(["-probesize", "64M", "-analyzeduration", "60M"]);
+    }
+    cmd.args(super::disc::input_args(path, 0))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     let out = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
@@ -110,21 +159,79 @@ pub async fn probe(ffprobe: &Path, path: &Path) -> anyhow::Result<MediaInfo> {
     }
     let json: Value = serde_json::from_slice(&out.stdout).context("ffprobe returned invalid JSON")?;
     let mut info = parse(&json)?;
-    // No client plays a DVD's file as is (it is one part of the movie), and
-    // its timestamps restart: the IFO knows the duration.
-    if super::disc::is_dvd(path) {
+    // No client plays a DVD as is, and its timestamps restart: the disc's
+    // information files know the duration, chapters and languages.
+    if dvd {
         info.container = "dvd".into();
         let p = path.to_path_buf();
         if let Ok(Some(title)) = tokio::task::spawn_blocking(move || super::disc::title(&p)).await {
-            let size: Option<i64> = json
-                .pointer("/format/size")
-                .and_then(Value::as_str)
-                .and_then(|s| s.parse().ok());
-            info.bitrate = size.map(|s| s * 8000 / title.duration_ms.max(1)).or(info.bitrate);
-            info.duration_ms = Some(title.duration_ms);
+            apply_disc_title(&mut info, &json, &title);
         }
     }
     Ok(info)
+}
+
+/// What a DVD's IFO says, over what ffprobe guessed.
+fn apply_disc_title(info: &mut MediaInfo, json: &Value, title: &super::disc::Title) {
+    info.duration_ms = Some(title.duration_ms);
+    info.bitrate = Some((title.bytes() as i64).saturating_mul(8000) / title.duration_ms.max(1));
+    info.chapters = title
+        .chapters
+        .iter()
+        .map(|&start_ms| Chapter { start_ms, title: None })
+        .collect();
+    // ffprobe's stream index → MPEG stream id (`0x80`…).
+    let ids: std::collections::HashMap<i64, u32> = json
+        .get("streams")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?.trim_start_matches("0x");
+            Some((s.get("index")?.as_i64()?, u32::from_str_radix(id, 16).ok()?))
+        })
+        .collect();
+    let track = |index: i32, tracks: &[super::disc::Track]| {
+        let id = ids.get(&i64::from(index))?;
+        tracks.iter().find(|t| t.id == *id).cloned()
+    };
+    for a in &mut info.audio {
+        if let Some(t) = track(a.index, &title.audio) {
+            a.language = t.language.or(a.language.take());
+            a.title = t.label.or(a.title.take());
+        }
+    }
+    for s in &mut info.subtitles {
+        if let Some(t) = track(s.index, &title.subtitles) {
+            s.language = t.language.or(s.language.take());
+            s.title = t.label.or(s.title.take());
+            s.forced |= t.forced;
+        }
+    }
+    // Subtitles appear when first shown: those ffprobe did not meet yet are
+    // listed from the disc, to be found by id.
+    let seen: Vec<u32> = ids.values().copied().collect();
+    let mut next = DISC_SUBTITLE_BASE;
+    for t in &title.subtitles {
+        if seen.contains(&t.id)
+            || info
+                .subtitles
+                .iter()
+                .any(|s| s.stream_id == Some(format!("{:#x}", t.id)))
+        {
+            continue;
+        }
+        info.subtitles.push(SubtitleStream {
+            index: next,
+            stream_id: Some(format!("{:#x}", t.id)),
+            codec: "dvd_subtitle".into(),
+            language: t.language.clone(),
+            title: t.label.clone(),
+            forced: t.forced,
+            ..Default::default()
+        });
+        next += 1;
+    }
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
@@ -236,6 +343,7 @@ pub fn parse(json: &Value) -> anyhow::Result<MediaInfo> {
             Some("video") if video.is_none() && !disposition(s, "attached_pic") => {
                 video = Some(VideoStream {
                     index,
+                    stream_id: str_of(s, "id"),
                     codec,
                     profile: str_of(s, "profile"),
                     level: int_of(s, "level")
@@ -255,6 +363,7 @@ pub fn parse(json: &Value) -> anyhow::Result<MediaInfo> {
             }
             Some("audio") => audio.push(AudioStream {
                 index,
+                stream_id: str_of(s, "id"),
                 codec,
                 profile: str_of(s, "profile"),
                 channels: int_of(s, "channels").and_then(|c| i32::try_from(c).ok()),
@@ -264,6 +373,7 @@ pub fn parse(json: &Value) -> anyhow::Result<MediaInfo> {
             }),
             Some("subtitle") => subtitles.push(SubtitleStream {
                 index,
+                stream_id: str_of(s, "id"),
                 text: is_text_subtitle(&codec),
                 codec,
                 language: tag(s, "language").filter(|l| l != "und"),
@@ -284,6 +394,24 @@ pub fn parse(json: &Value) -> anyhow::Result<MediaInfo> {
         .filter(|d| d.is_finite() && *d > 0.0)
         .map(|d| (d * 1000.0) as i64);
     let format_name = str_of(format, "format_name").unwrap_or_default();
+    let chapters = json
+        .get("chapters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let start: f64 = c.get("start_time")?.as_str()?.parse().ok()?;
+            Some(Chapter {
+                start_ms: (start * 1000.0).round() as i64,
+                title: c
+                    .pointer("/tags/title")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned),
+            })
+        })
+        .collect();
     Ok(MediaInfo {
         container: container(&format_name, video.as_ref(), &audio),
         duration_ms,
@@ -291,6 +419,7 @@ pub fn parse(json: &Value) -> anyhow::Result<MediaInfo> {
         video,
         audio,
         subtitles,
+        chapters,
     })
 }
 

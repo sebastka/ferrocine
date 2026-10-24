@@ -16,7 +16,7 @@ use anyhow::{Context, bail};
 use futures_util::{StreamExt, stream};
 
 use super::artwork::{self, find_image};
-use super::disc::{self, DiscFile};
+use super::disc::{self, DiscFile, Dvd, Source};
 use super::dotignore::DotIgnore;
 use super::naming::{self, ProviderIds};
 use super::nfo::{self, Nfo};
@@ -51,14 +51,40 @@ struct VideoFile {
     /// Of every part, for a disc.
     size: i64,
     mtime: i64,
-    /// For the feature of a DVD or Blu-ray folder: the movie's folder (the
-    /// one holding `VIDEO_TS` or `BDMV`).
-    disc: Option<PathBuf>,
+    /// A disc's title: the movie's folder (holding `VIDEO_TS`, `BDMV` or the
+    /// image), which holds its artwork and `.nfo`, and the name to parse.
+    disc: Option<(PathBuf, String)>,
+    /// An extra: its kind and the folder of its movie.
+    extra: Option<(&'static str, PathBuf)>,
+}
+
+/// An extra to index under its movie.
+struct ExtraFile {
+    parent: i64,
+    path: PathBuf,
+    kind: &'static str,
+    title: String,
+    size: i64,
+    mtime: i64,
+}
+
+/// The DVDs of each season of a series, with their order.
+type DiscsBySeason<'a> = BTreeMap<(String, i32), Vec<(Vec<(u64, String)>, &'a WalkDvd)>>;
+
+/// A DVD (folder or image) met during a scan.
+struct WalkDvd {
+    dvd: Dvd,
+    root: PathBuf,
+    mtime: i64,
+    /// The movie's folder and the name to parse.
+    dir: PathBuf,
+    name: String,
 }
 
 #[derive(Default)]
 struct Walk {
     files: Vec<VideoFile>,
+    dvds: Vec<WalkDvd>,
     /// File names of every directory walked.
     dirs: HashMap<PathBuf, Vec<String>>,
     /// An unreadable entry was met: do not delete what was not seen.
@@ -154,12 +180,15 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
         }
         let mut dot_ignore = DotIgnore::new(root);
         let mut discs = Vec::new();
+        let mut dvd_folders: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut images: Vec<PathBuf> = Vec::new();
         let mut ignored = 0usize;
         let entries = walkdir::WalkDir::new(root)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
                 let is_dir = e.file_type().is_dir();
+                // Extras folders are walked: their files are extras.
                 if e.depth() > 0 && is_dir && naming::is_skipped_dir(&e.file_name().to_string_lossy()) {
                     return false;
                 }
@@ -187,7 +216,11 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
                 continue;
             }
             let dir = parent(path);
-            if naming::has_extension(path, &naming::VIDEO_EXTENSIONS) && !naming::is_extra_file(&stem(path)) {
+            if name.eq_ignore_ascii_case("VIDEO_TS.IFO") {
+                dvd_folders.insert(dir.clone());
+            } else if naming::has_extension(path, &["iso"]) {
+                images.push(path.to_path_buf());
+            } else if naming::has_extension(path, &naming::VIDEO_EXTENSIONS) && !naming::is_sample(&stem(path)) {
                 let Ok(meta) = entry.metadata() else {
                     out.incomplete = true;
                     continue;
@@ -208,18 +241,51 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
                         size,
                         mtime,
                         disc: None,
+                        extra: extra_of(root, path),
                     });
                 }
             }
             out.dirs.entry(dir).or_default().push(name);
         }
+        // DVDs with their information files: read by title.
+        let mut sources: Vec<Source> = dvd_folders.into_iter().map(Source::Folder).collect();
+        sources.extend(images.into_iter().map(Source::Image));
+        for source in sources {
+            match Dvd::open(&source) {
+                Ok(Some(dvd)) => {
+                    if let Source::Folder(dir) = &source {
+                        discs.retain(|d| d.path.parent() != Some(dir.as_path()));
+                    }
+                    let (dir, name) = disc_name(root, &source, &out.dirs);
+                    out.dvds.push(WalkDvd {
+                        mtime: dvd.mtime(),
+                        dvd,
+                        root: root.clone(),
+                        dir,
+                        name,
+                    });
+                }
+                Ok(None) => tracing::debug!(path = %source.path().display(), "not a DVD-Video disc; skipped"),
+                Err(e) => {
+                    tracing::warn!(path = %source.path().display(), error = %e, "cannot read disc; nothing will be removed by this scan");
+                    out.incomplete = true;
+                }
+            }
+        }
+        // Without them (or for Blu-ray): the biggest title set or stream file.
         for f in disc::features(std::mem::take(&mut discs)) {
+            let name = f
+                .movie_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             out.files.push(VideoFile {
                 path: f.path,
                 root: root.clone(),
                 size: f.size,
                 mtime: f.mtime,
-                disc: Some(f.movie_dir),
+                disc: Some((f.movie_dir, name)),
+                extra: None,
             });
         }
         if dot_ignore.unreadable {
@@ -231,6 +297,73 @@ fn walk(roots: &[PathBuf]) -> anyhow::Result<Walk> {
     }
     out.files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+/// The kind of extra a file is and its movie's folder: in an extras folder
+/// (`Alien (1979)/Trailers/…`), or named like one next to the movie.
+fn extra_of(root: &Path, path: &Path) -> Option<(&'static str, PathBuf)> {
+    let rel = path.strip_prefix(root).ok()?;
+    let mut dir = root.to_path_buf();
+    for c in rel.parent()?.components() {
+        let name = c.as_os_str().to_string_lossy();
+        if let Some(kind) = naming::extra_dir(&name) {
+            return Some((kind, dir));
+        }
+        dir.push(c);
+    }
+    naming::extra_file(&stem(path)).map(|kind| (kind, parent(path)))
+}
+
+/// The movie folder of a DVD and the name to parse: the folder holding it,
+/// or the image's own name when it sits at the library's root or among
+/// other videos.
+fn disc_name(root: &Path, source: &Source, dirs: &HashMap<PathBuf, Vec<String>>) -> (PathBuf, String) {
+    let dir = source.movie_dir();
+    let dir_name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+    if let Source::Image(image) = source {
+        let crowded = dirs.get(&dir).is_some_and(|names| {
+            names
+                .iter()
+                .filter(|n| {
+                    let p = Path::new(n);
+                    naming::has_extension(p, &["iso"]) || naming::has_extension(p, &naming::VIDEO_EXTENSIONS)
+                })
+                .count()
+                > 1
+        });
+        if dir == root || crowded {
+            return (dir, stem(image));
+        }
+    }
+    (dir, dir_name.unwrap_or_default())
+}
+
+/// Order of disc names: `Disc 2` before `Disc 10`.
+fn natural_key(s: &str) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    let mut digits = String::new();
+    let mut text = String::new();
+    for c in s.to_lowercase().chars() {
+        if c.is_ascii_digit() {
+            if !text.is_empty() {
+                out.push((0, std::mem::take(&mut text)));
+            }
+            digits.push(c);
+        } else {
+            if !digits.is_empty() {
+                out.push((digits.parse().unwrap_or(u64::MAX), String::new()));
+                digits.clear();
+            }
+            text.push(c);
+        }
+    }
+    if !digits.is_empty() {
+        out.push((digits.parse().unwrap_or(u64::MAX), String::new()));
+    }
+    if !text.is_empty() {
+        out.push((0, text));
+    }
+    out
 }
 
 /// External subtitle files next to a video.
@@ -251,6 +384,7 @@ fn sidecar_subtitles(dir: &Path, names: &[String], video_stem: &str) -> Vec<Subt
         .enumerate()
         .map(|(i, (n, language, forced, title, ext))| SubtitleStream {
             index: EXTERNAL_SUBTITLE_BASE + i as i32,
+            stream_id: None,
             codec: match ext.as_str() {
                 "srt" => "subrip".into(),
                 "vtt" => "webvtt".into(),
@@ -419,14 +553,101 @@ impl Scanner {
 
     async fn scan_movies(&self, ctx: &Ctx<'_>) {
         let concurrency = ctx.cfg.scanner.probe_concurrency;
+        // The movies: files, and the longest title of each DVD.
+        let mut movies: Vec<VideoFile> = ctx.walk.files.iter().filter(|f| f.extra.is_none()).cloned().collect();
+        for d in &ctx.walk.dvds {
+            if let Some(t) = d.dvd.feature() {
+                movies.push(VideoFile {
+                    path: d.dvd.source.title_path(t.number),
+                    root: d.root.clone(),
+                    size: t.bytes() as i64,
+                    mtime: d.mtime,
+                    disc: Some((d.dir.clone(), d.name.clone())),
+                    extra: None,
+                });
+            }
+        }
         // Futures built in a loop rather than by a closure: rustc cannot
         // prove `Send` for closures returning borrowing futures.
-        let mut tasks = Vec::with_capacity(ctx.walk.files.len());
-        for f in &ctx.walk.files {
+        let mut tasks = Vec::with_capacity(movies.len());
+        for f in &movies {
             tasks.push(async move {
-                if let Err(e) = self.movie(ctx, f).await {
+                match self.movie(ctx, f).await {
+                    Ok(id) => Some((f.path.clone(), id)),
+                    Err(e) => {
+                        ctx.count(|s| s.errors += 1);
+                        tracing::warn!(file = %f.path.display(), error = %format!("{e:#}"), "cannot index movie");
+                        None
+                    }
+                }
+            });
+        }
+        let ids: HashMap<PathBuf, i64> = stream::iter(tasks)
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+
+        // Their extras: other titles of the DVD, files of extras folders.
+        let mut extras: Vec<ExtraFile> = Vec::new();
+        for d in &ctx.walk.dvds {
+            let Some(parent) = d
+                .dvd
+                .feature()
+                .and_then(|t| ids.get(&d.dvd.source.title_path(t.number)))
+            else {
+                continue;
+            };
+            for (n, t) in d.dvd.extras().into_iter().enumerate() {
+                let path = d.dvd.source.title_path(t.number);
+                extras.push(ExtraFile {
+                    parent: *parent,
+                    path,
+                    kind: "extra",
+                    title: format!("Extra {}", n + 1),
+                    size: t.bytes() as i64,
+                    mtime: d.mtime,
+                });
+            }
+        }
+        for f in ctx.walk.files.iter() {
+            let Some((kind, movie_dir)) = &f.extra else { continue };
+            // The movie of that folder: the only one, or the one the extra is named after.
+            let candidates: Vec<(&PathBuf, i64)> = ids
+                .iter()
+                .filter(|(p, _)| p.parent() == Some(movie_dir.as_path()))
+                .map(|(p, id)| (p, *id))
+                .collect();
+            let file_stem = stem(&f.path).to_lowercase();
+            let parent = match candidates.as_slice() {
+                [(_, id)] => Some(*id),
+                many => many
+                    .iter()
+                    .find(|(p, _)| file_stem.starts_with(&stem(p).to_lowercase()))
+                    .map(|(_, id)| *id),
+            };
+            let Some(parent) = parent else {
+                tracing::debug!(file = %f.path.display(), "extra without a movie; skipped");
+                continue;
+            };
+            let title = naming::extra_title(&stem(&f.path), kind);
+            extras.push(ExtraFile {
+                parent,
+                path: f.path.clone(),
+                kind,
+                title,
+                size: f.size,
+                mtime: f.mtime,
+            });
+        }
+        let mut tasks = Vec::with_capacity(extras.len());
+        for x in &extras {
+            tasks.push(async move {
+                if let Err(e) = self.extra(ctx, x).await {
                     ctx.count(|s| s.errors += 1);
-                    tracing::warn!(file = %f.path.display(), error = %format!("{e:#}"), "cannot index movie");
+                    tracing::warn!(file = %x.path.display(), error = %format!("{e:#}"), "cannot index extra");
                 }
             });
         }
@@ -436,18 +657,16 @@ impl Scanner {
             .await;
     }
 
-    async fn movie(&self, ctx: &Ctx<'_>, f: &VideoFile) -> anyhow::Result<()> {
+    /// Index a movie; returns its id.
+    async fn movie(&self, ctx: &Ctx<'_>, f: &VideoFile) -> anyhow::Result<i64> {
         let path_str = f.path.to_string_lossy().into_owned();
         let key = path_key(&ctx.lib.id, ItemKind::Movie, &path_str);
         let existing = ctx.existing.get(&key);
         // A disc is named, described and illustrated by its movie's folder.
-        let dir = f.disc.clone().unwrap_or_else(|| parent(&f.path));
+        let dir = f.disc.as_ref().map_or_else(|| parent(&f.path), |d| d.0.clone());
         let names = ctx.names(&dir);
         let file_stem = match &f.disc {
-            Some(d) => d
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Some((_, name)) => name.clone(),
             None => stem(&f.path),
         };
         let alone = f.disc.is_some()
@@ -505,9 +724,9 @@ impl Scanner {
             self.store.touch_items(&[e.id], ctx.generation).await?;
             ctx.count(|s| s.unchanged += 1);
             let media = e.media.clone();
-            return self
-                .artwork(ctx, e.id, ItemKind::Movie, &local_art, None, &f.path, media.as_ref())
-                .await;
+            self.artwork(ctx, e.id, ItemKind::Movie, &local_art, None, &f.path, media.as_ref())
+                .await?;
+            return Ok(e.id);
         }
 
         let media = match existing.and_then(|e| e.media.clone()) {
@@ -520,9 +739,9 @@ impl Scanner {
         // movie, else the file name.
         let from_file = naming::parse_title_year(&file_stem);
         let from_dir = naming::parse_title_year(&dir.file_name().map(|d| d.to_string_lossy()).unwrap_or_default());
-        let named = if f.disc.is_some()
-            || alone && from_dir.year.is_some() && from_file.year.is_none()
-            || alone && !from_dir.ids.is_empty()
+        // A disc's name is its folder's (or its image's): already `file_stem`.
+        let named = if f.disc.is_none()
+            && (alone && from_dir.year.is_some() && from_file.year.is_none() || alone && !from_dir.ids.is_empty())
         {
             from_dir
         } else {
@@ -582,6 +801,7 @@ impl Scanner {
                 remote_matched: matched,
                 added_at: existing.map_or(now, |e| e.added_at),
                 seen_scan: ctx.generation,
+                extra_type: None,
             })
             .await?;
         ctx.count(|s| {
@@ -600,7 +820,75 @@ impl Scanner {
             &f.path,
             Some(&media),
         )
-        .await
+        .await?;
+        Ok(id)
+    }
+
+    /// Index an extra of a movie.
+    async fn extra(&self, ctx: &Ctx<'_>, x: &ExtraFile) -> anyhow::Result<()> {
+        let (parent, path, kind, title, size, mtime) =
+            (x.parent, x.path.as_path(), x.kind, x.title.clone(), x.size, x.mtime);
+        let path_str = path.to_string_lossy().into_owned();
+        let key = path_key(&ctx.lib.id, ItemKind::Extra, &path_str);
+        let existing = ctx.existing.get(&key);
+        let unchanged = existing.is_some_and(|e| {
+            e.file_size == Some(size)
+                && e.file_mtime == Some(mtime)
+                && e.parent_id == Some(parent)
+                && e.meta.title == title
+                && e.extra_type.as_deref() == Some(kind)
+        });
+        if let Some(e) = existing
+            && unchanged
+            && !ctx.opts.refresh_metadata
+        {
+            self.store.touch_items(&[e.id], ctx.generation).await?;
+            ctx.count(|s| s.unchanged += 1);
+            return self
+                .artwork(ctx, e.id, ItemKind::Extra, &[], None, path, e.media.as_ref())
+                .await;
+        }
+        let media = match existing.and_then(|e| e.media.clone()) {
+            Some(m) if existing.is_some_and(|e| e.file_size == Some(size) && e.file_mtime == Some(mtime)) => m,
+            _ => probe::probe(&ctx.cfg.transcoding.ffprobe, path).await?,
+        };
+        let meta = Meta {
+            title,
+            runtime_ms: media.duration_ms,
+            ..Default::default()
+        };
+        let id = self
+            .store
+            .upsert_item(&ItemWrite {
+                library_id: ctx.lib.id.clone(),
+                kind: ItemKind::Extra,
+                parent_id: Some(parent),
+                series_id: None,
+                path_key: key,
+                path: Some(path_str),
+                meta,
+                season_number: None,
+                episode_number: None,
+                file_size: Some(size),
+                file_mtime: Some(mtime),
+                media: Some(media.clone()),
+                local_key: Some(String::new()),
+                remote_fetched_at: None,
+                remote_matched: false,
+                added_at: existing.map_or_else(now_ms, |e| e.added_at),
+                seen_scan: ctx.generation,
+                extra_type: Some(kind.to_owned()),
+            })
+            .await?;
+        ctx.count(|s| {
+            if existing.is_some() {
+                s.updated += 1
+            } else {
+                s.added += 1
+            }
+        });
+        self.artwork(ctx, id, ItemKind::Extra, &[], None, path, Some(&media))
+            .await
     }
 
     // --------------------------------------------------------------- shows
@@ -610,10 +898,14 @@ impl Scanner {
         // files at the root).
         let mut series: BTreeMap<String, SeriesGroup> = BTreeMap::new();
         for f in &ctx.walk.files {
-            // One disc holds several episodes, which only its navigation
-            // files tell apart: disc folders are for movie libraries.
+            // Extras folders belong to movies.
+            if f.extra.is_some() {
+                continue;
+            }
+            // A Blu-ray, or a DVD without its information files: one stream,
+            // several episodes that nothing tells apart.
             if f.disc.is_some() {
-                tracing::info!(path = %f.path.display(), "disc folders are not read in show libraries; skipped");
+                tracing::info!(path = %f.path.display(), "disc without DVD information files in a show library; skipped");
                 continue;
             }
             let Ok(rel) = f.path.strip_prefix(&f.root) else {
@@ -678,6 +970,70 @@ impl Scanner {
                     episode: number,
                     title,
                 });
+        }
+        // DVDs: their episode titles, numbered on in disc order within a
+        // season (`Show/Season 1/Disc 1/VIDEO_TS`, `Show/Show S01D2.iso`).
+        let mut discs: DiscsBySeason<'_> = BTreeMap::new();
+        for d in &ctx.walk.dvds {
+            let Ok(rel) = d.dvd.source.path().strip_prefix(&d.root) else {
+                continue;
+            };
+            let dirs: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            let Some(top) = dirs.first().filter(|_| dirs.len() > 1) else {
+                tracing::warn!(path = %d.dvd.source.path().display(), "disc outside a series directory; skipped");
+                continue;
+            };
+            let season = dirs[1..]
+                .iter()
+                .rev()
+                .find_map(|n| naming::parse_season_dir(n).or_else(|| naming::disc_season(n)))
+                .unwrap_or(1);
+            let series_dir = d.root.join(top);
+            series
+                .entry(series_dir.to_string_lossy().into_owned())
+                .or_insert_with(|| SeriesGroup {
+                    identity: series_dir.to_string_lossy().into_owned(),
+                    name: top.clone(),
+                    dir: Some(series_dir.clone()),
+                    episodes: Vec::new(),
+                });
+            discs
+                .entry((series_dir.to_string_lossy().into_owned(), season))
+                .or_default()
+                .push((natural_key(&rel.to_string_lossy()), d));
+        }
+        for ((identity, season), mut list) in discs {
+            list.sort_by(|a, b| a.0.cmp(&b.0));
+            // After the season's episode files, if any.
+            let group = series.get_mut(&identity).expect("added above");
+            let mut number = group
+                .episodes
+                .iter()
+                .filter(|e| e.season == season)
+                .map(|e| e.episode)
+                .max()
+                .unwrap_or(0);
+            for (_, d) in list {
+                for t in d.dvd.episodes() {
+                    number += 1;
+                    group.episodes.push(EpisodeFile {
+                        file: VideoFile {
+                            path: d.dvd.source.title_path(t.number),
+                            root: d.root.clone(),
+                            size: t.bytes() as i64,
+                            mtime: d.mtime,
+                            disc: Some((d.dir.clone(), d.name.clone())),
+                            extra: None,
+                        },
+                        season,
+                        episode: number,
+                        title: None,
+                    });
+                }
+            }
         }
         for group in series.values() {
             if let Err(e) = self.series(ctx, group).await {
@@ -758,6 +1114,7 @@ impl Scanner {
                     remote_matched: matched,
                     added_at: existing.map_or(now, |e| e.added_at),
                     seen_scan: ctx.generation,
+                    extra_type: None,
                 })
                 .await?
         };
@@ -896,6 +1253,7 @@ impl Scanner {
                 remote_matched: matched,
                 added_at: existing.map_or(now, |e| e.added_at),
                 seen_scan: ctx.generation,
+                extra_type: None,
             })
             .await?;
         if ctx.cfg.metadata.local_artwork || remote.is_some() {
@@ -1066,6 +1424,7 @@ impl Scanner {
                 remote_matched: matched,
                 added_at,
                 seen_scan: ctx.generation,
+                extra_type: None,
             })
             .await?;
         ctx.count(|s| {
@@ -1252,7 +1611,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn walk_skips_extras_hidden_and_dot_ignored_files() {
+    fn walk_finds_extras_and_skips_hidden_samples_and_dot_ignored_files() {
         let root = std::env::temp_dir().join(format!("fc-walk-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for p in [
@@ -1261,6 +1620,8 @@ mod tests {
             "Alien (1979)/poster.jpg",
             "Alien (1979)/Extras/Making of.mkv",
             "Alien (1979)/Alien (1979)-trailer.mp4",
+            "Alien (1979)/Samples/sample.mkv",
+            "Alien (1979)/alien-sample.mkv",
             ".hidden/x.mkv",
             "notes.txt",
             // A show in a movie library, hidden by an empty .ignore.
@@ -1273,9 +1634,27 @@ mod tests {
             std::fs::write(&f, content).unwrap();
         }
         let w = walk(std::slice::from_ref(&root)).unwrap();
-        assert_eq!(w.files.len(), 1);
-        assert!(!w.incomplete);
         let dir = root.join("Alien (1979)");
+        let found: Vec<(String, Option<&str>)> = w
+            .files
+            .iter()
+            .map(|f| {
+                assert!(f.extra.as_ref().is_none_or(|(_, movie)| *movie == dir));
+                (
+                    f.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    f.extra.as_ref().map(|e| e.0),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("Alien (1979)-trailer.mp4".into(), Some("trailer")),
+                ("Alien (1979).mkv".into(), None),
+                ("Making of.mkv".into(), Some("extra")),
+            ]
+        );
+        assert!(!w.incomplete);
         let names = &w.dirs[&dir];
         let subs = sidecar_subtitles(&dir, names, "Alien (1979)");
         assert_eq!(subs.len(), 1);

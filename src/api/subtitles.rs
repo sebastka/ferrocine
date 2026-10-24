@@ -21,6 +21,7 @@ use crate::subtitles::{Candidate, OpenSubtitles, STORED_BASE, hash_file, query_f
 pub fn stream_of(s: &StoredSubtitle) -> SubtitleStream {
     SubtitleStream {
         index: STORED_BASE + s.id as i32,
+        stream_id: None,
         codec: "webvtt".into(),
         language: Some(s.language.clone()),
         title: Some(s.release_name.clone().unwrap_or_else(|| "OpenSubtitles".into())),
