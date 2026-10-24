@@ -1094,6 +1094,15 @@ async fn sign_in_scan_and_play() {
         assert_eq!(home["next_up"][0]["id"], episodes[1]["id"], "{name}: {home}");
         let found = admin.json("/api/v1/search?q=pilot%20(tmdb").await;
         assert_eq!(found[0]["id"], pilot, "{name}");
+        assert_eq!(found[0]["matched"], Value::Null, "{name}: found by its title");
+        // By cast (from TMDB), with why.
+        let found = admin.json("/api/v1/search?q=keanu").await;
+        assert_eq!(found[0]["title"], "The Matrix", "{name}: {found}");
+        assert_eq!(
+            found[0]["matched"],
+            json!({"kind": "cast", "text": "Keanu Reeves", "role": "actor", "character": "Neo"}),
+            "{name}"
+        );
         // The kid is not in `grown-ups`.
         let libs = kid.json("/api/v1/libraries").await;
         assert_eq!(libs.as_array().unwrap().len(), 1, "{name}: {libs}");

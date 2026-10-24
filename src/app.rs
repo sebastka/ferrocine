@@ -49,6 +49,10 @@ pub async fn run(config_path: PathBuf, config: Config) -> anyhow::Result<()> {
     let store = connect_with_retry(&config).await?;
     store.migrate().await?;
     store.sync_libraries(&config.libraries).await?;
+    let indexed = store.backfill_search_text().await?;
+    if indexed > 0 {
+        tracing::info!(items = indexed, "search text filled");
+    }
     tracing::info!(dialect = ?store.dialect(), libraries = config.libraries.len(), "database ready");
 
     let shutdown = CancellationToken::new();

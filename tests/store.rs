@@ -4,9 +4,10 @@ mod common;
 
 use common::{database_urls, store, unique};
 use ferrocine::config::{LibraryConfig, LibraryKind};
-use ferrocine::media::{ItemKind, Meta};
+use ferrocine::media::{ItemKind, Meta, Person};
 use ferrocine::store::{
-    Identity, ImageKind, ImageSource, ItemWrite, ListQuery, LoginRequest, NewSession, SortBy, Store, now_ms, sha256_hex,
+    Identity, ImageKind, ImageSource, ItemWrite, ListQuery, LoginRequest, NewSession, SortBy, Store, SummaryRow,
+    now_ms, sha256_hex,
 };
 
 fn library(id: &str, kind: LibraryKind) -> LibraryConfig {
@@ -72,6 +73,91 @@ async fn user(store: &Store, name: &str) -> i64 {
 }
 
 #[tokio::test]
+async fn search_by_titles_cast_and_crew() {
+    for (name, url) in database_urls() {
+        let store = store(&url).await;
+        let lib = unique("search");
+        store
+            .sync_libraries(&[library(&lib, LibraryKind::Movies)])
+            .await
+            .unwrap();
+        let person = |n: &str, role: &str, character: Option<&str>| Person {
+            name: n.into(),
+            role: role.into(),
+            character: character.map(String::from),
+        };
+        let mut chihiro = write(&lib, ItemKind::Movie, "chihiro", "Le Voyage de Chihiro", Some(2001));
+        chihiro.meta.original_title = Some("千と千尋の神隠し".into());
+        chihiro.meta.provider_title = Some("Le Voyage de Chihiro".into());
+        chihiro.meta.people = vec![person("Hayao Miyazaki", "director", None)];
+        let mut matrix = write(&lib, ItemKind::Movie, "matrix", "The Matrix", Some(1999));
+        matrix.meta.people = vec![person("Keanu Reeves", "actor", Some("Neo"))];
+        let amelie = write(
+            &lib,
+            ItemKind::Movie,
+            "amelie",
+            "Le Fabuleux Destin d'Amélie Poulain",
+            Some(2001),
+        );
+        let ids: Vec<i64> = [
+            store.upsert_item(&chihiro).await.unwrap(),
+            store.upsert_item(&matrix).await.unwrap(),
+            store.upsert_item(&amelie).await.unwrap(),
+        ]
+        .to_vec();
+        let u = user(&store, "searcher").await;
+        let libs = [lib.clone()];
+        let found = |rows: Vec<SummaryRow>| rows.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        for (query, expected) in [
+            ("keanu", vec![ids[1]]),
+            ("REEVES", vec![ids[1]]),
+            ("miyazaki", vec![ids[0]]),
+            ("千尋", vec![ids[0]]),
+            ("amelie", vec![ids[2]]),
+            ("AMÉLIE poulain", vec![ids[2]]),
+            ("keanu matrix", vec![ids[1]]),
+            ("keanu chihiro", vec![]),
+            ("100%_", vec![]),
+        ] {
+            let rows = store.search(u, &libs, query, 50).await.unwrap();
+            assert_eq!(found(rows), expected, "{name}: {query}");
+        }
+        // The library filter searches the same way.
+        let (rows, total) = store
+            .list_items(
+                u,
+                &ListQuery {
+                    library_id: lib.clone(),
+                    title: Some("Hayao".into()),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!((found(rows), total), (vec![ids[0]], 1), "{name}");
+        // Items written before the search text existed are filled at startup.
+        let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE items SET search_text = NULL WHERE id = {}",
+            ids[1]
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(store.search(u, &libs, "keanu", 50).await.unwrap().is_empty(), "{name}");
+        assert!(store.backfill_search_text().await.unwrap() >= 1, "{name}");
+        assert_eq!(
+            found(store.search(u, &libs, "keanu", 50).await.unwrap()),
+            [ids[1]],
+            "{name}"
+        );
+        let details = store.search_details(&ids).await.unwrap();
+        assert_eq!(details[&ids[0]].0.as_deref(), Some("千と千尋の神隠し"), "{name}");
+    }
+}
+
+#[tokio::test]
 async fn items_lists_and_user_data() {
     for (name, url) in database_urls() {
         let store = store(&url).await;
@@ -118,12 +204,14 @@ async fn items_lists_and_user_data() {
             [Some(2001), Some(1999), None],
             "{name}"
         );
-        // LIKE metacharacters are literal.
+        // LIKE metacharacters are never wildcards: punctuation is not searched.
         let mut lq = q(SortBy::Title, false);
         lq.title = Some("100%".into());
         assert_eq!(store.list_items(u, &lq).await.unwrap().1, 1, "{name}");
-        lq.title = Some("%".into());
-        assert_eq!(store.list_items(u, &lq).await.unwrap().1, 1, "{name}");
+        for wildcard in ["%", "_", "%%"] {
+            lq.title = Some(wildcard.into());
+            assert_eq!(store.list_items(u, &lq).await.unwrap().1, 0, "{name}: {wildcard}");
+        }
         let mut gq = q(SortBy::Title, false);
         gq.genre = Some("Drama".into());
         assert_eq!(store.list_items(u, &gq).await.unwrap().1, 3, "{name}");

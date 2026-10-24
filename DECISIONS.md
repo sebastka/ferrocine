@@ -235,6 +235,14 @@ generated libraries.
   without any image). Logos are stored as PNG with transparency.
 - **The TMDB key** may be a v4 read access token (sent as a bearer token) or
   a v3 key. Image downloads carry no credential.
+- **Search** matches titles (shown, original, localized) and cast and crew
+  names. They are kept per item as one folded text (lower case, accents
+  removed with Unicode decomposition, punctuation as spaces), filled when an
+  item is written and, for older items, at startup; every word of a query
+  must appear (`LIKE '%word%'`, the same on both databases). A scan for a
+  substring across a few thousand items is fast enough without a full-text
+  index, which PostgreSQL and MariaDB would each do differently. Search
+  results say why they matched when it was not the shown title.
 - **Refresh.** `POST /items/{id}/refresh` (admin) clears the item's (and its
   children's) metadata state; the next scan rebuilds them from scratch. A
   library scan with `refresh_metadata=true` does the same for every item.
