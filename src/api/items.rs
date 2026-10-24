@@ -681,10 +681,35 @@ pub async fn search(
         Ok(r) => r,
         Err(e) => return internal(&e),
     };
-    match summarize(&state, &user, rows).await {
-        Ok(items) => Json(items).into_response(),
-        Err(e) => internal(&e),
-    }
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    let (items, details) = match tokio::try_join!(summarize(&state, &user, rows), state.store.search_details(&ids)) {
+        Ok(x) => x,
+        Err(e) => return internal(&e),
+    };
+    let terms = crate::search::terms(q);
+    let hits: Vec<SearchHit> = items
+        .into_iter()
+        .map(|item| {
+            let matched = details.get(&item.id).and_then(|(original, localized, people)| {
+                crate::search::why(
+                    &item.title,
+                    &[original.as_deref(), localized.as_deref()],
+                    people,
+                    &terms,
+                )
+            });
+            SearchHit { item, matched }
+        })
+        .collect();
+    Json(hits).into_response()
+}
+
+/// A search result, and why it matched when not by its title.
+#[derive(Serialize)]
+pub struct SearchHit {
+    #[serde(flatten)]
+    item: ItemSummary,
+    matched: Option<crate::search::Matched>,
 }
 
 #[cfg(test)]

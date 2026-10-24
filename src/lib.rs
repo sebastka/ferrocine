@@ -17,6 +17,7 @@ pub mod media;
 pub mod metadata;
 pub mod metrics;
 pub mod reload;
+pub mod search;
 pub mod store;
 pub mod subtitles;
 pub mod transcode;

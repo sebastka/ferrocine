@@ -76,7 +76,7 @@ Top-level items of a library: movies, or series. Query parameters (all optional)
 | `genre` | one genre name |
 | `played` | `true` / `false` (series: fully played or not) |
 | `favorite` | `true` |
-| `q` | case-insensitive substring of the title |
+| `q` | words found in the titles or the cast and crew, as in [search](#get-apiv1searchqlimit) |
 | `offset`, `limit` | paging; `limit` defaults to 100, at most 500 |
 
 ```json
@@ -223,7 +223,18 @@ series or season). `202`.
 
 ### `GET /api/v1/search?q=…&limit=…`
 
-Movies, series and episodes whose title contains `q` (at least 2 characters): `[ItemSummary, …]`.
+Movies, series and episodes found by `q` (at least 2 characters): every word of it must appear in
+the item's titles (shown, original, localized) or in the names of its cast and crew, in any order,
+ignoring case, accents and punctuation ("amelie" finds "Amélie", "keanu matrix" The Matrix).
+`[ItemSummary + matched, …]`, where `matched` says why a result was found when not by its title:
+
+```json
+{ "kind": "cast", "text": "Keanu Reeves", "role": "actor", "character": "Neo" }
+{ "kind": "crew", "text": "Lana Wachowski", "role": "director" }
+{ "kind": "original_title", "text": "千と千尋の神隠し" }
+```
+
+`matched` is `null` when the shown title holds every word.
 
 ## Playback
 

@@ -249,6 +249,19 @@ pub struct ListQuery {
     pub limit: i64,
 }
 
+/// Every word of a query in the item's search text (titles, cast, crew).
+fn search_clauses(query: &str, clauses: &mut Vec<String>, args: &mut Vec<Arg>) {
+    let terms = crate::search::terms(query);
+    if terms.is_empty() {
+        // Nothing searchable (punctuation only): nothing found.
+        clauses.push("1 = 0".into());
+    }
+    for t in terms {
+        clauses.push("i.search_text LIKE ?".into());
+        args.push(Arg::S(format!("%{}%", like_escape(&t))));
+    }
+}
+
 /// Escape `%`, `_` and `\` for a LIKE pattern (backslash is the default
 /// escape character of both engines).
 pub fn like_escape(s: &str) -> String {
@@ -324,15 +337,16 @@ impl Store {
             "original_language",
             "provider_title",
             "extra_type",
+            "search_text",
         ];
         let sql = format!(
             "INSERT INTO items (library_id, kind, parent_id, series_id, path_key, path, title, sort_title, \
              original_title, year, premiere_date, season_number, episode_number, overview, tagline, rating_x100, \
              official_rating, genres, studios, people, tmdb_id, imdb_id, tvdb_id, runtime_ms, file_size, \
              file_mtime, media, local_key, remote_fetched_at, remote_matched, added_at, content_added_at, \
-             updated_at, seen_scan, ratings, anidb_id, anilist_id, original_language, provider_title, extra_type) \
+             updated_at, seen_scan, ratings, anidb_id, anilist_id, original_language, provider_title, extra_type, search_text) \
              VALUES ({}){}",
-            placeholders(40),
+            placeholders(41),
             self.upsert_tail("path_key", &updated)
         );
         let m = &w.meta;
@@ -382,6 +396,7 @@ impl Store {
             .bind(m.original_language.as_deref().map(|t| truncate(t, 8)))
             .bind(m.provider_title.as_deref().map(|t| truncate(t, 512)))
             .bind(w.extra_type.as_deref().map(|t| truncate(t, 32)))
+            .bind(crate::search::index_text(m))
             .execute(self.pool())
             .await
             .with_context(|| format!("cannot store item {:?}", w.meta.title))?;
@@ -431,6 +446,63 @@ impl Store {
             changed += 1;
         }
         Ok(changed)
+    }
+
+    /// Titles and people of items, for search results: (original title,
+    /// localized title, people) by id.
+    pub async fn search_details(
+        &self,
+        ids: &[i64],
+    ) -> anyhow::Result<HashMap<i64, (Option<String>, Option<String>, Vec<Person>)>> {
+        let mut out = HashMap::new();
+        for chunk in ids.chunks(IN_CHUNK) {
+            let sql = format!(
+                "SELECT id, original_title, provider_title, people FROM items WHERE id IN ({})",
+                placeholders(chunk.len())
+            );
+            let mut q = sqlx::query(self.sql_owned(sql));
+            for id in chunk {
+                q = q.bind(id);
+            }
+            for r in q.fetch_all(self.pool()).await? {
+                out.insert(
+                    r.try_get(0)?,
+                    (r.try_get(1)?, r.try_get(2)?, json_list::<Person>(r.try_get(3)?)),
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fill the search text of items written before it existed; returns how
+    /// many were filled.
+    pub async fn backfill_search_text(&self) -> anyhow::Result<u64> {
+        let mut total = 0;
+        loop {
+            let rows = sqlx::query(self.sql(
+                "SELECT id, title, original_title, provider_title, people FROM items WHERE search_text IS NULL LIMIT 500",
+            ))
+            .fetch_all(self.pool())
+            .await?;
+            if rows.is_empty() {
+                return Ok(total);
+            }
+            for r in &rows {
+                let meta = Meta {
+                    title: r.try_get(1)?,
+                    original_title: r.try_get(2)?,
+                    provider_title: r.try_get(3)?,
+                    people: json_list(r.try_get(4)?),
+                    ..Default::default()
+                };
+                sqlx::query(self.sql("UPDATE items SET search_text = ? WHERE id = ?"))
+                    .bind(crate::search::index_text(&meta))
+                    .bind(r.try_get::<i64, _>(0)?)
+                    .execute(self.pool())
+                    .await?;
+            }
+            total += rows.len() as u64;
+        }
     }
 
     /// Mark unchanged items as seen by scan `generation`.
@@ -519,8 +591,7 @@ impl Store {
             args.push(Arg::S(format!("%{}%", like_escape(&serde_json::to_string(g)?))));
         }
         if let Some(t) = &q.title {
-            clauses.push("LOWER(i.title) LIKE ?".into());
-            args.push(Arg::S(format!("%{}%", like_escape(&t.to_lowercase()))));
+            search_clauses(t, &mut clauses, &mut args);
         }
         if q.favorite {
             clauses.push("ud.favorite = 1".into());
@@ -597,11 +668,14 @@ impl Store {
         limit: i64,
     ) -> anyhow::Result<Vec<SummaryRow>> {
         let mut args = Vec::new();
-        let libs = Self::libraries_clause(libraries, &mut args);
-        args.push(Arg::S(format!("%{}%", like_escape(&text.to_lowercase()))));
+        let mut clauses = vec![
+            Self::libraries_clause(libraries, &mut args),
+            "i.kind IN (1, 2, 4)".to_owned(),
+        ];
+        search_clauses(text, &mut clauses, &mut args);
         self.summaries(
             user_id,
-            &format!("{libs} AND i.kind IN (1, 2, 4) AND LOWER(i.title) LIKE ?"),
+            &clauses.join(" AND "),
             "i.kind, i.sort_title, i.id",
             &args,
             limit,
