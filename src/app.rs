@@ -53,6 +53,9 @@ pub async fn run(config_path: PathBuf, config: Config) -> anyhow::Result<()> {
     if indexed > 0 {
         tracing::info!(items = indexed, "search text filled");
     }
+    let assets = Arc::new(crate::assets::Assets::open(&config.metadata.directory)?);
+    tracing::info!(directory = %config.metadata.directory.display(), "metadata directory ready");
+    move_subtitles(&store, &assets).await?;
     tracing::info!(dialect = ?store.dialect(), libraries = config.libraries.len(), "database ready");
 
     let shutdown = CancellationToken::new();
@@ -81,15 +84,17 @@ pub async fn run(config_path: PathBuf, config: Config) -> anyhow::Result<()> {
         http: http.clone(),
         providers: providers.clone(),
         shutdown: shutdown.clone(),
-        scanner: Scanner::new(store.clone(), http.clone(), providers),
+        scanner: Scanner::new(store.clone(), http.clone(), providers, assets.clone()),
         scan_tx: scan_tx.clone(),
         transcoder: transcoder.clone(),
         metrics: metrics.clone(),
+        assets,
     }));
     spawn_sighup(state.clone());
 
     let scans = tokio::spawn(scan_loop(state.clone(), scan_rx, shutdown.clone()));
     tokio::spawn(housekeeping(state.clone(), shutdown.clone()));
+    tokio::spawn(trickplay_loop(state.clone()));
     if config.scanner.on_start {
         for l in &config.libraries {
             let _ = scan_tx.try_send(ScanRequest {
@@ -148,7 +153,10 @@ async fn scan_loop(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>, sh
             };
             let result = state.scanner.scan(&config, &lib, r.opts).await;
             match &result {
-                Ok(Some(_)) => state.metrics.scan(&lib.id, true),
+                Ok(Some(_)) => {
+                    state.metrics.scan(&lib.id, true);
+                    state.trickplay_wake.notify_one();
+                }
                 Ok(None) => {}
                 Err(_) => state.metrics.scan(&lib.id, false),
             }
@@ -164,12 +172,78 @@ async fn scan_loop(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>, sh
     }
 }
 
-/// Purge expired sessions and sweep caches.
+/// Downloaded subtitles kept in the database by earlier versions move to
+/// the metadata directory.
+async fn move_subtitles(store: &crate::store::Store, assets: &crate::assets::Assets) -> anyhow::Result<()> {
+    let pending = store.subtitles_without_files().await?;
+    for (id, vtt) in &pending {
+        let tag = assets.put(crate::assets::Kind::Subtitle, vtt.as_bytes()).await?;
+        store.set_subtitle_file(*id, &tag).await?;
+    }
+    if !pending.is_empty() {
+        tracing::info!(
+            subtitles = pending.len(),
+            "downloaded subtitles moved to the metadata directory"
+        );
+    }
+    Ok(())
+}
+
+/// Make seek bar previews after scans (and hourly), one item at a time.
+async fn trickplay_loop(state: Arc<AppState>) {
+    let mut failed = std::collections::HashSet::new();
+    loop {
+        let config = state.config();
+        if config.metadata.trickplay.enabled {
+            match crate::trickplay::pass(
+                &state.store,
+                &state.assets,
+                &config,
+                state.transcoder.ffmpeg.tone_mapper,
+                &mut failed,
+                &state.shutdown,
+            )
+            .await
+            {
+                Ok(n) if n > 0 => tracing::info!(items = n, "seek bar previews done"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %format!("{e:#}"), "seek bar preview pass failed"),
+            }
+        }
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = state.trickplay_wake.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+        }
+    }
+}
+
+/// Remove the metadata directory's files no row refers to.
+async fn collect_assets(state: &AppState) -> anyhow::Result<()> {
+    let images = state.store.all_image_tags().await?;
+    let subtitles = state.store.all_subtitle_tags().await?;
+    let trickplay = state.store.all_trickplay_tags().await?;
+    let assets = state.assets.clone();
+    let c = tokio::task::spawn_blocking(move || assets.collect(&images, &subtitles, &trickplay)).await??;
+    if c.files > 0 {
+        tracing::info!(files = c.files, bytes = c.bytes, "unused metadata files removed");
+    }
+    Ok(())
+}
+
+/// Purge expired sessions, sweep caches, and (hourly) unused metadata files.
 async fn housekeeping(state: Arc<AppState>, shutdown: CancellationToken) {
+    let mut rounds = 0u32;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+        }
+        rounds += 1;
+        if rounds.is_multiple_of(12)
+            && let Err(e) = collect_assets(&state).await
+        {
+            tracing::warn!(error = %format!("{e:#}"), "cannot clean the metadata directory");
         }
         state.sessions.sweep();
         let idle = state.config().auth.idle().as_millis_i64();

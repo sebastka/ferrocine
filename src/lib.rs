@@ -10,6 +10,7 @@ pub const VERSION: &str = match option_env!("FERROCINE_VERSION") {
 
 pub mod api;
 pub mod app;
+pub mod assets;
 pub mod auth;
 pub mod config;
 pub mod lang;
@@ -21,3 +22,4 @@ pub mod search;
 pub mod store;
 pub mod subtitles;
 pub mod transcode;
+pub mod trickplay;

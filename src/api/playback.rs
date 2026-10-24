@@ -250,14 +250,24 @@ pub async fn subtitles(
     };
     // Downloaded subtitles are stored as WebVTT.
     if index >= crate::subtitles::STORED_BASE {
-        return match state
+        let tag = match state
             .store
-            .subtitle_content(id, i64::from(index - crate::subtitles::STORED_BASE))
+            .subtitle_tag(id, i64::from(index - crate::subtitles::STORED_BASE))
             .await
         {
-            Ok(Some(vtt)) => vtt_response(crate::transcode::subtitles::shift(&vtt, p.start_ms)),
-            Ok(None) => not_found(),
-            Err(e) => internal(&e),
+            Ok(Some(tag)) => tag,
+            Ok(None) => return not_found(),
+            Err(e) => return internal(&e),
+        };
+        return match state.assets.read(crate::assets::Kind::Subtitle, &tag).await {
+            Ok(vtt) => vtt_response(crate::transcode::subtitles::shift(
+                &String::from_utf8_lossy(&vtt),
+                p.start_ms,
+            )),
+            Err(e) => {
+                tracing::warn!(item = id, error = %format!("{e:#}"), "subtitle file missing");
+                not_found()
+            }
         };
     }
     let file = match media_file(&row).await {

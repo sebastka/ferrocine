@@ -388,6 +388,16 @@ fn validate(c: &Config) -> Result<(), ConfigError> {
             describe::x264_presets().collect::<Vec<_>>().join(", ")
         ));
     }
+    if !c.metadata.directory.is_absolute() {
+        errors.push("metadata.directory must be an absolute path".into());
+    }
+    let t = &c.metadata.trickplay;
+    if t.interval.0 < std::time::Duration::from_secs(1) {
+        errors.push("metadata.trickplay.interval must be at least 1s".into());
+    }
+    if !(80..=640).contains(&t.width) {
+        errors.push("metadata.trickplay.width must be between 80 and 640".into());
+    }
     if !(1..=100).contains(&c.metadata.jpeg_quality) {
         errors.push("metadata.jpeg_quality must be between 1 and 100".into());
     }

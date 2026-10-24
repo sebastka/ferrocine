@@ -114,6 +114,16 @@ metadata:
   # Away". ["*"] for every language. Changes apply on reload, without
   # fetching metadata again; titles from .nfo files are never switched.
   prefer_original_title: []
+  # Artwork, seek bar previews and downloaded subtitles: a writable volume,
+  # shared by instances sharing the database. State and textual metadata
+  # stay in the database. Changing it needs a restart; nothing is moved.
+  directory: /var/lib/ferrocine
+  # Seek bar previews of movies, episodes and extras, made after scans, one
+  # item at a time (keyframes only): about 2 to 3 MB per film at 240 px.
+  trickplay:
+    enabled: true
+    interval: 10s           # between two frames, at least 1s
+    width: 240              # pixels, 80 to 640
   # Read Kodi-style .nfo files next to the media; they win over TMDB.
   nfo: true
   # Use poster.jpg, fanart.jpg, <name>-poster.jpg… next to the media.

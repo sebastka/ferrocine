@@ -37,6 +37,8 @@ services:
       - ${MEDIA_DIR:?set MEDIA_DIR}:/media:ro
       # HLS segments; ephemeral, a few GB at most.
       - transcodes:/transcodes
+      # Artwork, seek bar previews, downloaded subtitles (`metadata.directory`).
+      - metadata:/var/lib/ferrocine
     # Hardware transcoding (Intel or AMD): the render node and the group that
     # owns it on the host (`getent group render`). Remove both for software.
     # NVIDIA: see docs/deployment.md.
@@ -68,3 +70,4 @@ services:
 volumes:
   postgres:
   transcodes:
+  metadata:

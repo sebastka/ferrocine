@@ -170,6 +170,10 @@ pub async fn download(
             return error(StatusCode::BAD_GATEWAY, "the subtitle provider did not answer");
         }
     };
+    let content_tag = match state.assets.put(crate::assets::Kind::Subtitle, d.vtt.as_bytes()).await {
+        Ok(t) => t,
+        Err(e) => return internal(&e),
+    };
     let stored = state
         .store
         .add_subtitle(
@@ -182,7 +186,7 @@ pub async fn download(
                 hearing_impaired: req.hearing_impaired,
                 forced: req.foreign_parts_only,
                 hash_match: req.hash_match,
-                content: &d.vtt,
+                content_tag: &content_tag,
                 created_by: &user.username,
             },
             now_ms(),

@@ -54,6 +54,10 @@ pub struct AppState {
     pub transcoder: Arc<Transcoder>,
     pub subtitles: Subtitles,
     pub metrics: Metrics,
+    /// The metadata directory: artwork, subtitles, previews.
+    pub assets: Arc<crate::assets::Assets>,
+    /// Wakes the seek bar preview pass (after a scan).
+    pub trickplay_wake: tokio::sync::Notify,
 }
 
 /// What [`AppState`] is built from.
@@ -69,6 +73,7 @@ pub struct Parts {
     pub scan_tx: mpsc::Sender<ScanRequest>,
     pub transcoder: Arc<Transcoder>,
     pub metrics: Metrics,
+    pub assets: Arc<crate::assets::Assets>,
 }
 
 impl AppState {
@@ -88,6 +93,8 @@ impl AppState {
             scan_tx: p.scan_tx,
             transcoder: p.transcoder,
             metrics: p.metrics,
+            assets: p.assets,
+            trickplay_wake: tokio::sync::Notify::new(),
         }
     }
 
@@ -172,6 +179,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/items/{id}", get(items::item))
         .route("/items/{id}/children", get(items::children))
         .route("/items/{id}/images/{kind}", get(items::image))
+        .route("/items/{id}/trickplay/{tag}/{sheet}", get(items::trickplay_sheet))
         .route("/items/{id}/progress", post(items::progress))
         .route("/items/{id}/played", post(items::played).delete(items::unplayed))
         .route("/items/{id}/favorite", post(items::favorite).delete(items::unfavorite))

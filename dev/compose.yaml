@@ -63,6 +63,7 @@ services:
     volumes:
       - ./config:/etc/ferrocine:ro
       - ${MEDIA_DIR:-./media}:/media:ro
+      - metadata:/var/lib/ferrocine
     # Hardware acceleration: the render node, and its group on the host
     # (`getent group render`).
     devices:
@@ -89,3 +90,4 @@ services:
 
 volumes:
   postgres:
+  metadata:

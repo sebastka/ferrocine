@@ -10,7 +10,12 @@ Ferrocine runs as two containers and a database:
   point: it serves the app and proxies `/api/`, `/auth/`, `/healthz` and
   `/readyz` to the server, so both share one origin (the session cookie is
   first-party). Put your TLS reverse proxy or ingress in front of it.
-- **PostgreSQL or MariaDB**, holding state, metadata and artwork: back it up.
+- **PostgreSQL or MariaDB**, holding state and metadata: back it up.
+- **A metadata directory** (`/var/lib/ferrocine`, `metadata.directory`), a
+  writable volume for artwork, seek bar previews and downloaded subtitles:
+  about 3 MB per film. It can be rebuilt by scanning, except downloaded
+  subtitles (which would spend your subtitle provider's quota again): back
+  it up too if you keep those. Instances sharing a database must share it.
 
 ## Image tags and signatures
 

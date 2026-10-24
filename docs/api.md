@@ -190,6 +190,23 @@ Seasons of a series, episodes of a season, or extras of a movie, in order: `[Ite
 `kind`: `poster`, `backdrop`, `thumb`, `logo`. JPEG (logos: PNG with transparency); `404` when absent. Cached privately for a year
 (URLs are versioned).
 
+### Seek bar previews
+
+Item details carry `trickplay` once the previews of a movie, episode or extra are made (in the
+background after scans), else `null`:
+
+```json
+"trickplay": {
+  "interval_ms": 10000, "width": 240, "height": 136, "columns": 10, "rows": 10, "thumbnails": 642,
+  "sheets": ["/api/v1/items/12/trickplay/3f2a9c1e0b7d4e55/1.jpg", "…/7.jpg"]
+}
+```
+
+Frame `n` (from 0) shows time `n × interval_ms` (the last keyframe before it). It is in sheet
+`n / (columns × rows)`, at column `n % columns` and row `(n / columns) % rows`, each frame
+`width` × `height` pixels. Sheets are JPEG, cached privately for a year (the URL carries the set's
+tag); a URL of a replaced set answers `404`.
+
 ### `POST /api/v1/items/{id}/refresh` (admin)
 
 Re-reads local metadata and fetches remote metadata again for this item (and its children for a

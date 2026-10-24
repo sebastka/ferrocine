@@ -14,8 +14,8 @@ use super::{
     AnilistConfig, AuthConfig, Config, DatabaseConfig, Dur, HwAccel, LibraryConfig, LibraryKind, MetadataConfig,
     OidcConfig, ScannerConfig, ServerConfig, SubtitlesConfig, TitleLanguage, TranscodingConfig, default_anidb_images,
     default_anidb_titles, default_anidb_url, default_claim, default_connect_timeout, default_fanart_url,
-    default_language, default_leeway, default_max_connections, default_omdb_url, default_opensubtitles_url,
-    default_scopes, default_tmdb_images, default_tmdb_url, default_tvdb_url,
+    default_language, default_leeway, default_max_connections, default_metadata_directory, default_omdb_url,
+    default_opensubtitles_url, default_scopes, default_tmdb_images, default_tmdb_url, default_tvdb_url,
 };
 
 /// When a change to a section takes effect.
@@ -657,6 +657,34 @@ fn metadata(m: &MetadataConfig) -> Section {
                 json!(m.jpeg_quality),
                 json!(d.jpeg_quality),
                 "JPEG quality of stored artwork (1 to 100).",
+            ),
+            field(
+                "directory",
+                Kind::Path,
+                json!(m.directory),
+                json!(default_metadata_directory()),
+                "Where artwork, seek bar previews and downloaded subtitles are kept: a writable volume, shared by instances that share the database. Changing it needs a restart; nothing is moved.",
+            ),
+            field(
+                "trickplay.enabled",
+                Kind::Boolean,
+                json!(m.trickplay.enabled),
+                json!(d.trickplay.enabled),
+                "Make seek bar previews of movies, episodes and extras after scans, one item at a time (keyframes only).",
+            ),
+            field(
+                "trickplay.interval",
+                Kind::Duration,
+                dur(m.trickplay.interval),
+                dur(d.trickplay.interval),
+                "Time between two preview frames (at least 1s).",
+            ),
+            field(
+                "trickplay.width",
+                Kind::Integer,
+                json!(m.trickplay.width),
+                json!(d.trickplay.width),
+                "Width of a preview frame, in pixels (80 to 640); a film takes about 2 to 3 MB at 240.",
             ),
         ],
         items: None,

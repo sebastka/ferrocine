@@ -136,6 +136,8 @@ pub struct Scanner {
     running: Arc<Mutex<HashSet<String>>>,
     /// Provider state kept across scans (AniDB pacing and titles, tokens).
     providers: Arc<ProviderState>,
+    /// Where artwork goes.
+    assets: Arc<crate::assets::Assets>,
 }
 
 fn path_key(lib: &str, kind: ItemKind, identity: &str) -> String {
@@ -413,13 +415,35 @@ fn with_sidecars(mut media: MediaInfo, sidecars: Vec<SubtitleStream>) -> MediaIn
 type LocalArt = Vec<(ImageKind, Option<PathBuf>)>;
 
 impl Scanner {
-    pub fn new(store: Store, http: reqwest::Client, providers: Arc<ProviderState>) -> Self {
+    pub fn new(
+        store: Store,
+        http: reqwest::Client,
+        providers: Arc<ProviderState>,
+        assets: Arc<crate::assets::Assets>,
+    ) -> Self {
         Self {
             store,
             http,
             running: Arc::new(Mutex::new(HashSet::new())),
             providers,
+            assets,
         }
+    }
+
+    /// Store an image's file and record it.
+    #[allow(clippy::too_many_arguments)]
+    async fn put_image(
+        &self,
+        id: i64,
+        kind: ImageKind,
+        source: ImageSource,
+        source_key: &str,
+        p: &artwork::Processed,
+    ) -> anyhow::Result<()> {
+        let tag = self.assets.put(crate::assets::Kind::Image, &p.data).await?;
+        self.store
+            .put_image(id, kind, source, source_key, p.width, p.height, &tag)
+            .await
     }
 
     pub fn is_running(&self, library: &str) -> bool {
@@ -472,7 +496,7 @@ impl Scanner {
         tracing::info!(library = %lib.id, refresh = opts.refresh_metadata, "scan started");
         let mut result = self.scan_inner(cfg, lib, opts, started).await;
         if result.is_ok() {
-            match crate::subtitles::automatic(&self.store, cfg, lib, &self.http, &self.providers).await {
+            match crate::subtitles::automatic(&self.store, &self.assets, cfg, lib, &self.http, &self.providers).await {
                 Ok(n) => {
                     if let Ok(stats) = result.as_mut() {
                         stats.subtitles = n;
@@ -1486,9 +1510,7 @@ impl Scanner {
                 }
                 match artwork::load_file(path, image, width, cfg.jpeg_quality).await {
                     Ok(p) => {
-                        self.store
-                            .put_image(id, image, ImageSource::Local, &fp, p.width, p.height, &p.data)
-                            .await?;
+                        self.put_image(id, image, ImageSource::Local, &fp, &p).await?;
                     }
                     Err(e) => tracing::warn!(file = %path.display(), error = %format!("{e:#}"), "cannot read artwork"),
                 }
@@ -1528,9 +1550,7 @@ impl Scanner {
                         .await?
                     {
                         Ok(p) => {
-                            self.store
-                                .put_image(id, image, ImageSource::Remote, url, p.width, p.height, &p.data)
-                                .await?;
+                            self.put_image(id, image, ImageSource::Remote, url, &p).await?;
                             break;
                         }
                         Err(e) => tracing::warn!(image = %url, error = %format!("{e:#}"), "cannot decode artwork"),
@@ -1552,16 +1572,7 @@ impl Scanner {
                         if let Ok(p) =
                             tokio::task::spawn_blocking(move || artwork::process(&bytes, width, quality)).await?
                         {
-                            self.store
-                                .put_image(
-                                    id,
-                                    image,
-                                    ImageSource::Extracted,
-                                    &source_key,
-                                    p.width,
-                                    p.height,
-                                    &p.data,
-                                )
+                            self.put_image(id, image, ImageSource::Extracted, &source_key, &p)
                                 .await?;
                         }
                     }
