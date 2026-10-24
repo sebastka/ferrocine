@@ -50,6 +50,9 @@ auth:
   session_idle: 14d
   # …and this long after sign-in in any case.
   session_lifetime: 90d
+  # Devices signed in with Quick Connect (TV apps) are signed out after this
+  # long unused; until then they stay signed in, or until revoked.
+  device_idle: 90d
 
 transcoding:
   ffmpeg: ffmpeg

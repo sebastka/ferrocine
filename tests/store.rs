@@ -6,8 +6,8 @@ use common::{database_urls, store, unique};
 use ferrocine::config::{LibraryConfig, LibraryKind};
 use ferrocine::media::{ItemKind, Meta, Person};
 use ferrocine::store::{
-    Identity, ImageKind, ImageSource, ItemWrite, ListQuery, LoginRequest, NewSession, SortBy, Store, SummaryRow,
-    Trickplay, now_ms, sha256_hex,
+    Identity, ImageKind, ImageSource, ItemWrite, ListQuery, LoginRequest, NewPairing, NewSession, Redeemed, SortBy,
+    Store, SummaryRow, Trickplay, now_ms, sha256_hex,
 };
 
 fn library(id: &str, kind: LibraryKind) -> LibraryConfig {
@@ -414,6 +414,86 @@ async fn sessions_logins_and_locks() {
         a.release().await;
         let b = store.try_lock(&lock_name).await.unwrap();
         assert!(b.is_some(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn device_pairing() {
+    for (name, url) in database_urls() {
+        let store = store(&url).await;
+        let u = user(&store, "erin").await;
+        let now = now_ms();
+        // Codes are 8 characters; tests use the low bits of the clock.
+        let code = unique("c").rsplit('-').next().unwrap().to_uppercase();
+        let secret = sha256_hex(unique("secret").as_bytes());
+        let token = sha256_hex(unique("token").as_bytes());
+        let pairing = NewPairing {
+            secret_hash: &secret,
+            code: &code,
+            device_name: "Living room",
+            platform: Some("androidtv"),
+            expires_at: now + 60_000,
+        };
+        assert!(store.create_pairing(&pairing, now).await.unwrap(), "{name}");
+        // The same code again: draw another.
+        let other = sha256_hex(unique("other").as_bytes());
+        let again = NewPairing {
+            secret_hash: &other,
+            ..pairing
+        };
+        assert!(!store.create_pairing(&again, now).await.unwrap(), "{name}");
+        assert!(store.open_pairings(now).await.unwrap() >= 1, "{name}");
+        assert_eq!(
+            store.redeem_pairing(&secret, &token, now).await.unwrap(),
+            Redeemed::Pending,
+            "{name}"
+        );
+        assert_eq!(
+            store.pairing(&code, now).await.unwrap().unwrap().device_name,
+            "Living room"
+        );
+        // Not after it expired.
+        assert!(!store.approve_pairing(&code, u, now + 61_000).await.unwrap(), "{name}");
+        assert!(store.approve_pairing(&code, u, now).await.unwrap(), "{name}");
+        assert!(!store.approve_pairing(&code, u, now).await.unwrap(), "{name}");
+        assert!(store.pairing(&code, now).await.unwrap().is_none(), "{name}");
+        let Redeemed::Device { device, user_id } = store.redeem_pairing(&secret, &token, now).await.unwrap() else {
+            panic!("{name}: not redeemed");
+        };
+        assert_eq!((user_id, device.platform.as_deref()), (u, Some("androidtv")));
+        assert_eq!(
+            store.redeem_pairing(&secret, &token, now).await.unwrap(),
+            Redeemed::Gone,
+            "{name}"
+        );
+        let row = store.device_by_token(&token).await.unwrap().unwrap();
+        assert_eq!((row.user.id, row.device_id), (u, device.id), "{name}");
+        store.touch_device(device.id, now + 5).await.unwrap();
+        let list = store.devices(u).await.unwrap();
+        assert_eq!(list.iter().find(|d| d.id == device.id).unwrap().last_seen_at, now + 5);
+        assert_eq!(store.delete_device(u + 1_000_000, device.id).await.unwrap(), None);
+        assert_eq!(store.delete_device(u, device.id).await.unwrap(), Some(token.clone()));
+        assert!(store.device_by_token(&token).await.unwrap().is_none(), "{name}");
+
+        // Idle devices are signed out.
+        let code = unique("c").rsplit('-').next().unwrap().to_uppercase();
+        let secret = sha256_hex(unique("secret2").as_bytes());
+        let token = sha256_hex(unique("token2").as_bytes());
+        let p = NewPairing {
+            secret_hash: &secret,
+            code: &code,
+            device_name: "Bedroom",
+            platform: None,
+            expires_at: now + 60_000,
+        };
+        assert!(store.create_pairing(&p, now - 100_000).await.unwrap());
+        assert!(store.approve_pairing(&code, u, now).await.unwrap());
+        assert!(matches!(
+            store.redeem_pairing(&secret, &token, now - 100_000).await.unwrap(),
+            Redeemed::Device { .. }
+        ));
+        assert!(store.purge_devices(now, 50_000).await.unwrap() >= 1, "{name}");
+        assert!(store.device_by_token(&token).await.unwrap().is_none(), "{name}");
     }
 }
 

@@ -1095,6 +1095,101 @@ async fn sign_in_scan_and_play() {
             .unwrap();
         assert_eq!(r.status(), 403);
 
+        // Quick Connect: a TV pairs, the admin approves in the browser, the
+        // TV then uses its token (no cookie, no Fetch Metadata).
+        let tv = reqwest::Client::new();
+        let pair: Value = tv
+            .post(format!("{base}/api/v1/pair"))
+            .json(&json!({"device_name": "Living room", "platform": "androidtv"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let code = pair["code"].as_str().unwrap().to_owned();
+        assert_eq!(code.len(), 9, "{pair}");
+        assert!(pair["approve_url"].as_str().unwrap().ends_with(&code.replace('-', "")));
+        let poll = || async {
+            tv.post(format!("{base}/api/v1/pair/token"))
+                .json(&json!({"secret": pair["secret"]}))
+                .send()
+                .await
+                .unwrap()
+        };
+        let r = poll().await;
+        assert_eq!(r.status(), 400);
+        assert_eq!(r.json::<Value>().await.unwrap()["error"], "authorization_pending");
+        let shown = admin.json(&format!("/api/v1/pair/{}", code.to_lowercase())).await;
+        assert_eq!(shown["device_name"], "Living room", "{shown}");
+        let r = admin.post(&format!("/api/v1/pair/{code}/approve"), json!({})).await;
+        assert_eq!(r.status(), 204);
+        // Approved once only.
+        let r = kid.post(&format!("/api/v1/pair/{code}/approve"), json!({})).await;
+        assert_eq!(r.status(), 404);
+        let r = poll().await;
+        assert_eq!(r.status(), 200);
+        let granted: Value = r.json().await.unwrap();
+        assert_eq!(granted["user"]["username"], "admin", "{granted}");
+        let token = granted["access_token"].as_str().unwrap().to_owned();
+        // The secret is single use.
+        let r = poll().await;
+        assert_eq!(r.json::<Value>().await.unwrap()["error"], "expired_token");
+        let me: Value = tv
+            .get(format!("{base}/api/v1/me"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(me["username"], "admin", "{me}");
+        // Writes need no Fetch Metadata with a token.
+        let r = tv
+            .post(format!("{base}/api/v1/items/{oid}/favorite"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let r = tv
+            .delete(format!("{base}/api/v1/items/{oid}/favorite"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let devices: Value = tv
+            .get(format!("{base}/api/v1/me/devices"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(devices[0]["current"], true, "{devices}");
+        let id = devices[0]["id"].as_i64().unwrap();
+        assert_eq!(admin.json("/api/v1/me/devices").await[0]["current"], false);
+        assert_eq!(kid.json("/api/v1/me/devices").await, json!([]));
+        // Another user cannot sign it out; its owner can.
+        let r = kid
+            .send(kid.http.delete(kid.url(&format!("/api/v1/me/devices/{id}"))))
+            .await;
+        assert_eq!(r.status(), 404);
+        let r = admin
+            .send(admin.http.delete(admin.url(&format!("/api/v1/me/devices/{id}"))))
+            .await;
+        assert_eq!(r.status(), 204);
+        let r = tv
+            .get(format!("{base}/api/v1/me"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+
         // Progress, continue watching, played.
         let r = admin
             .post(&format!("/api/v1/items/{oid}/progress"), json!({"position_ms": 6000}))

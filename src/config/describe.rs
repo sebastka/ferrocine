@@ -276,6 +276,13 @@ fn auth(a: &AuthConfig) -> Section {
             dur(d.lifetime()),
             "A session ends this long after sign-in, used or not.",
         ),
+        field(
+            "device_idle",
+            Kind::Duration,
+            dur(a.device_idle()),
+            dur(d.device_idle()),
+            "A device signed in with Quick Connect (a TV app) is signed out after this long unused.",
+        ),
     ];
     fields.extend(oidc(a.oidc.as_ref()));
     Section {
@@ -939,6 +946,7 @@ database:
 auth:
   session_idle: 7d
   session_lifetime: 30d
+  device_idle: 60d
   oidc:
     issuer: https://id.example.com
     client_id: ferrocine

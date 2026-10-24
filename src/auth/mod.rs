@@ -1,14 +1,17 @@
-//! Sign-in with OpenID Connect (authorization code flow with PKCE) and
-//! browser sessions.
+//! Sign-in with OpenID Connect (authorization code flow with PKCE), browser
+//! sessions, and devices paired with Quick Connect.
 //!
 //! Ferrocine is the relying party: the browser never sees a token. The
 //! session cookie holds a random value; the database keeps only its SHA-256,
-//! so a database leak does not hand out sessions. Sessions are cached in
-//! memory for a minute to spare the database on segment requests.
+//! so a database leak does not hand out sessions. Devices (TV apps) send a
+//! token of their own as `Authorization: Bearer`, stored the same way. Both
+//! are cached in memory for a minute to spare the database on segment
+//! requests.
 
 pub mod avatar;
 pub mod jwt;
 pub mod oidc;
+pub mod pairing;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -37,12 +40,18 @@ const TOUCH_EVERY_MS: i64 = 5 * 60_000;
 #[derive(Clone)]
 struct Cached {
     user: User,
+    /// Set for a device token.
+    device: Option<i64>,
     expires_at: i64,
     last_seen_at: i64,
     at: Instant,
 }
 
-/// Resolves session cookies to users.
+/// The device a request came from, when signed with a device token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CurrentDevice(pub i64);
+
+/// Resolves session cookies and device tokens to users.
 pub struct Sessions {
     cache: Mutex<HashMap<String, Cached>>,
     /// `https` public URL: cookies are `Secure` and `__Host-` prefixed.
@@ -74,7 +83,7 @@ impl Sessions {
         HeaderValue::from_str(&c).unwrap_or_else(|_| HeaderValue::from_static(""))
     }
 
-    fn forget(&self, hash: &str) {
+    pub fn forget(&self, hash: &str) {
         if let Ok(mut c) = self.cache.lock() {
             c.remove(hash);
         }
@@ -101,12 +110,26 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty())
 }
 
-/// Look up the session of a request.
-pub async fn current_user(state: &AppState, headers: &HeaderMap) -> Option<User> {
-    let value = cookie_value(headers, &state.sessions.name(SESSION_COOKIE))?;
+/// The token of `Authorization: Bearer`.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+/// Look up the device token, else the session, of a request.
+pub async fn current_user(state: &AppState, headers: &HeaderMap) -> Option<(User, Option<CurrentDevice>)> {
+    let (value, device) = match bearer(headers) {
+        Some(token) => (token, true),
+        None => (cookie_value(headers, &state.sessions.name(SESSION_COOKIE))?, false),
+    };
     let hash = sha256_hex(value.as_bytes());
     let now = now_ms();
-    let idle = state.config().auth.idle().as_millis_i64();
+    let auth = &state.config().auth;
+    let idle = if device { auth.device_idle() } else { auth.idle() }.as_millis_i64();
     let cached = state
         .sessions
         .cache
@@ -117,18 +140,36 @@ pub async fn current_user(state: &AppState, headers: &HeaderMap) -> Option<User>
     let entry = match cached {
         Some(c) => c,
         None => {
-            let row = match state.store.session(&hash).await {
-                Ok(r) => r?,
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot read session");
-                    return None;
+            let c = if device {
+                let row = match state.store.device_by_token(&hash).await {
+                    Ok(r) => r?,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot read device");
+                        return None;
+                    }
+                };
+                Cached {
+                    user: row.user,
+                    device: Some(row.device_id),
+                    expires_at: i64::MAX,
+                    last_seen_at: row.last_seen_at,
+                    at: Instant::now(),
                 }
-            };
-            let c = Cached {
-                user: row.user,
-                expires_at: row.expires_at,
-                last_seen_at: row.last_seen_at,
-                at: Instant::now(),
+            } else {
+                let row = match state.store.session(&hash).await {
+                    Ok(r) => r?,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot read session");
+                        return None;
+                    }
+                };
+                Cached {
+                    user: row.user,
+                    device: None,
+                    expires_at: row.expires_at,
+                    last_seen_at: row.last_seen_at,
+                    at: Instant::now(),
+                }
             };
             if let Ok(mut cache) = state.sessions.cache.lock() {
                 cache.insert(hash.clone(), c.clone());
@@ -147,13 +188,18 @@ pub async fn current_user(state: &AppState, headers: &HeaderMap) -> Option<User>
             c.last_seen_at = now;
         }
         let store = state.store.clone();
+        let device = entry.device;
         tokio::spawn(async move {
-            if let Err(e) = store.touch_session(&hash, now).await {
+            let touched = match device {
+                Some(id) => store.touch_device(id, now).await,
+                None => store.touch_session(&hash, now).await,
+            };
+            if let Err(e) = touched {
                 tracing::debug!(error = %e, "cannot touch session");
             }
         });
     }
-    Some(entry.user)
+    Some((entry.user, entry.device.map(CurrentDevice)))
 }
 
 /// Same-origin check for state-changing requests (CSRF): Fetch Metadata
@@ -168,15 +214,23 @@ pub fn same_origin(headers: &HeaderMap, public_url: &str) -> bool {
         .is_some_and(|o| jwt::trim_slash(o) == jwt::trim_slash(public_url))
 }
 
-/// Middleware of `/api/v1`: a valid session, and same-origin unsafe requests.
+/// Middleware of `/api/v1`: a valid session and same-origin unsafe
+/// requests, or a device token (which no browser sends on its own, so
+/// needs no CSRF check).
 pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
     let unsafe_method = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if unsafe_method && !same_origin(req.headers(), &state.config().server.public_url) {
+    if unsafe_method
+        && bearer(req.headers()).is_none()
+        && !same_origin(req.headers(), &state.config().server.public_url)
+    {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     match current_user(&state, req.headers()).await {
-        Some(user) => {
+        Some((user, device)) => {
             req.extensions_mut().insert(user);
+            if let Some(d) = device {
+                req.extensions_mut().insert(d);
+            }
             next.run(req).await
         }
         None => (

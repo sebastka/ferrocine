@@ -6,6 +6,7 @@
 //! milliseconds and booleans SMALLINT, so no date or boolean type crosses the
 //! driver boundary.
 
+mod devices;
 mod images;
 mod items;
 mod subtitles;
@@ -21,6 +22,7 @@ use sqlx::any::{AnyConnectOptions, AnyPoolOptions};
 use sqlx::pool::PoolConnection;
 use sqlx::{Any, AnyPool, AssertSqlSafe, Row};
 
+pub use devices::*;
 pub use images::*;
 pub use items::*;
 pub use subtitles::*;

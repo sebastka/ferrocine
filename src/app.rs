@@ -256,6 +256,12 @@ async fn housekeeping(state: Arc<AppState>, shutdown: CancellationToken) {
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "cannot purge sessions"),
         }
+        let idle = state.config().auth.device_idle().as_millis_i64();
+        match state.store.purge_devices(now_ms(), idle).await {
+            Ok(n) if n > 0 => tracing::info!(devices = n, "unused devices signed out"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "cannot purge devices"),
+        }
     }
 }
 

@@ -6,17 +6,19 @@ Ferrocine serves one origin:
 |---|---|
 | `/` | The web UI (static files, SPA fallback to `index.html`) |
 | `/auth/login`, `/auth/callback`, `/auth/logout` | OpenID Connect sign-in (see [DECISIONS.md](../DECISIONS.md), D10 and D11) |
-| `/api/v1/…` | JSON API, authenticated by the session cookie |
+| `/api/v1/…` | JSON API, authenticated by the session cookie or a device token |
 | `/healthz`, `/readyz` | Probes (no authentication) |
 | `/metrics` | Prometheus metrics (optional bearer token, `server.metrics_token`) |
 
 Conventions:
 
-- **Authentication.** Every `/api/v1` endpoint needs the `ferrocine_session` cookie set by
-  `/auth/callback`. Without it: `401 {"error": "unauthenticated", "login": "/auth/login"}`.
-- **CSRF.** Requests with an unsafe method (`POST`, `PUT`, `DELETE`) must be same-origin:
-  `Sec-Fetch-Site: same-origin` (or `none`), or an `Origin` equal to `server.public_url`.
-  Otherwise `403`.
+- **Authentication.** Every `/api/v1` endpoint (except the two Quick Connect calls a device makes
+  before it has a token) needs the `ferrocine_session` cookie set by `/auth/callback`, or a device
+  token from [Quick Connect](#devices-quick-connect) as `Authorization: Bearer <token>`. Without
+  either: `401 {"error": "unauthenticated", "login": "/auth/login"}`.
+- **CSRF.** Requests with an unsafe method (`POST`, `PUT`, `DELETE`) and a cookie must be
+  same-origin: `Sec-Fetch-Site: same-origin` (or `none`), or an `Origin` equal to
+  `server.public_url`. Otherwise `403`. Requests with a device token need no such check.
 - **Errors** are `{"error": "message"}` with a 4xx/5xx status.
 - **Timestamps** are milliseconds since the Unix epoch; durations and positions are milliseconds
   (`*_ms`).
@@ -48,6 +50,73 @@ Form post (same-origin). Ends the session and redirects (303) to the provider's
 ### `GET /auth/login?return_to=/path`
 
 Starts the sign-in; `return_to` must be a local path.
+
+## Devices (Quick Connect)
+
+Apps without a browser (TV apps) sign in by pairing: the device shows a code, a signed-in user
+approves it in the web UI, and the device receives a token of its own. The polling answers follow
+the OAuth device authorization grant (RFC 8628).
+
+### `POST /api/v1/pair` (no sign-in)
+
+```json
+{ "device_name": "Living room TV", "platform": "androidtv" }
+```
+
+- `device_name`: 1 to 64 printable characters; `platform`: optional, 1 to 32.
+
+Answer:
+
+```json
+{ "code": "K7TQ-M2XD", "secret": "…", "approve_url": "https://media.example.com/pair?code=K7TQM2XD",
+  "expires_in": 600, "interval": 5 }
+```
+
+- `code`: to show. Codes use `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no `0`/`O`, `1`/`I`); case,
+  spaces and dashes are ignored where a code is typed.
+- `secret`: to poll with; never shown.
+- `approve_url`: the web UI's approval page with the code filled in, e.g. for a QR code.
+- `429` when 100 pairings are already in progress on the server.
+
+### `POST /api/v1/pair/token` (no sign-in)
+
+`{ "secret": "…" }`, every `interval` seconds until approved or expired.
+
+- `400 {"error": "authorization_pending"}`: not approved yet; poll again.
+- `400 {"error": "expired_token"}`: expired, unknown or already redeemed; start over.
+- `200`, once:
+
+  ```json
+  { "access_token": "…", "token_type": "Bearer",
+    "device": { "id": 7, "name": "Living room TV", "platform": "androidtv",
+                "created_at": 1761300000000, "last_seen_at": 1761300000000 },
+    "user": { "id": 1, "username": "alice", "display_name": "Alice", "email": "alice@example.com",
+              "admin": true } }
+  ```
+
+  The token is valid until the device is signed out, or after `auth.device_idle` (90 days by
+  default) unused. It carries the user's groups as of their last sign-in in a browser.
+
+### `GET /api/v1/pair/{code}`
+
+The device awaiting approval under `code`, for the approval page to show before approving:
+`{ "code": "K7TQ-M2XD", "device_name": "Living room TV", "platform": "androidtv",
+"expires_at": 1761300600000 }`. `404` when there is none (unknown, expired or approved).
+
+### `POST /api/v1/pair/{code}/approve`
+
+Signs the device in as the current user. `204`; `404` when there is no such pairing awaiting
+approval; `403` with a device token (only a browser session approves).
+
+### `GET /api/v1/me/devices`
+
+The user's devices, most recently used first: `Device` objects as above, each with
+`"current": true` for the device making the request.
+
+### `DELETE /api/v1/me/devices/{id}`
+
+Signs a device out (`204`; `404` when the user has no such device). A device may sign itself
+out. Takes effect at once on this instance, within a minute on others.
 
 ## Libraries
 
@@ -270,13 +339,20 @@ The client says what it can play; the server picks the cheapest method.
   "capabilities": {
     "containers": ["mp4", "webm"],
     "video_codecs": ["h264", "hevc", "vp9", "av1"],
-    "audio_codecs": ["aac", "mp3", "opus", "flac"]
+    "audio_codecs": ["aac", "mp3", "opus", "flac"],
+    "hdr": null,
+    "selects_tracks": false
   }
 }
 ```
 
 - `audio_index`: a `media.audio[].index`; default: the default track.
 - `max_height`, `max_bitrate` (bits/s): limits; exceeding them forces a transcode.
+- `capabilities.hdr`: the HDR formats the display shows (`hdr10`, `hlg`, `dolby_vision`). When
+  given, video in another HDR format is transcoded with tone mapping (`[]` for an SDR display);
+  when absent (browsers), HDR video plays as it is.
+- `capabilities.selects_tracks`: the client switches audio tracks itself (a native player), so
+  direct play is used whatever `audio_index` is; the client then selects that track.
 - `burn_subtitle`: a `media.subtitles[].index` with `text: false`, drawn into the picture (forces a
   transcode; the answer's `burned_subtitle` says so). `400` for a text subtitle (those come as
   WebVTT).
