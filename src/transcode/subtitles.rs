@@ -54,7 +54,8 @@ impl Subtitles {
                 cmd.arg(sub).args(["-map", "0:s:0"]);
             }
             None => {
-                cmd.arg(file).args(["-map", &format!("0:{index}")]);
+                cmd.arg(crate::media::disc::ffmpeg_input(file))
+                    .args(["-map", &format!("0:{index}")]);
             }
         }
         cmd.args(["-c:s", "webvtt", "-f", "webvtt", "pipe:1"])

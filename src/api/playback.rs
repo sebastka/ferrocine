@@ -170,6 +170,8 @@ pub async fn stream(
         Err(resp) => return resp,
     };
     match media_file(&row).await {
+        // The file is one part of the movie: DVDs play through a transcode.
+        Ok(f) if crate::media::disc::is_dvd(&f) => error(StatusCode::CONFLICT, "a DVD plays through a transcode"),
         Ok(f) => serve(&f, req, "private, no-transform").await,
         Err(resp) => resp,
     }
