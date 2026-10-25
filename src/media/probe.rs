@@ -171,6 +171,65 @@ pub async fn probe(ffprobe: &Path, path: &Path) -> anyhow::Result<MediaInfo> {
     Ok(info)
 }
 
+/// Where a stream copying video stream `index` from `at_ms` really starts,
+/// in ms: ffmpeg seeks to an index point (a keyframe) at or before it, and
+/// copied video can only start there. Found by letting ffmpeg make the very
+/// same seek and copy one packet. `None` on failure.
+pub async fn copy_start(ffmpeg: &Path, path: &Path, index: i32, at_ms: i64) -> Option<i64> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-nostdin",
+                "-noaccurate_seek",
+                "-copyts",
+                "-start_at_zero",
+            ])
+            .args(["-ss", &format!("{:.3}", at_ms as f64 / 1000.0), "-i"])
+            .arg(path)
+            .args([
+                "-map",
+                &format!("0:{index}"),
+                "-c",
+                "copy",
+                "-frames:v",
+                "1",
+                "-f",
+                "framecrc",
+                "-",
+            ])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    first_packet_ms(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// From ffmpeg's `framecrc` output: the decoding time of the first packet,
+/// in ms (where the stream, audio included, begins).
+fn first_packet_ms(framecrc: &str) -> Option<i64> {
+    let tb = framecrc.lines().find_map(|l| l.strip_prefix("#tb 0: "))?;
+    let (num, den) = tb.trim().split_once('/')?;
+    let (num, den): (i64, i64) = (num.parse().ok()?, den.parse().ok()?);
+    let dts: i64 = framecrc
+        .lines()
+        .find(|l| l.starts_with("0,"))?
+        .split(',')
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()?;
+    (den > 0).then(|| (dts * num * 1000).div_euclid(den).max(0))
+}
+
 /// What a DVD's IFO says, over what ffprobe guessed.
 fn apply_disc_title(info: &mut MediaInfo, json: &Value, title: &super::disc::Title) {
     info.duration_ms = Some(title.duration_ms);
@@ -464,6 +523,16 @@ mod tests {
         assert_eq!(m.audio_stream(Some(2)).unwrap().codec, "aac");
         assert!(m.subtitles[0].text && m.subtitles[0].forced);
         assert!(!m.subtitles[1].text);
+    }
+
+    #[test]
+    fn first_packets() {
+        let out = "#format: frame checksums\n#version: 2\n#hash: CRC32\n#tb 0: 1/1000\n#media_type 0: video\n\
+                   0,      98125,      98208,       41,   151158, 0xcf7086b8\n";
+        assert_eq!(first_packet_ms(out), Some(98_125));
+        let ts = "#tb 0: 1/90000\n0,    8831250,    8838757,     3754,   12345, 0x00000000\n";
+        assert_eq!(first_packet_ms(ts), Some(98_125));
+        assert_eq!(first_packet_ms("#tb 0: 1/1000\n"), None);
     }
 
     #[test]
