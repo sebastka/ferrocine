@@ -822,7 +822,8 @@ async fn sign_in_scan_and_play() {
             .await
             .unwrap();
         assert_eq!(p["method"], "remux", "{name}: {p}");
-        assert_eq!(p["start_ms"], 4000);
+        // The copied video starts at the keyframe before: this file has one, at 0.
+        assert_eq!(p["start_ms"], 0, "{name}: {p}");
         play_hls(&admin, &p).await;
         let detail = admin.json(&format!("/api/v1/items/{aid}")).await;
         let embedded = &detail["media"]["subtitles"][0];

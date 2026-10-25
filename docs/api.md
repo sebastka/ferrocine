@@ -379,7 +379,9 @@ Answer:
   - `remux`: HLS (fMP4); the video is copied, the audio copied or converted: to AC-3 5.1 when
     the source is surround and `audio_codecs` has `ac3`, else to AAC stereo.
   - `transcode`: HLS (fMP4); the video is re-encoded to H.264 (hardware when available).
-- For HLS, **stream time 0 is item time `start_ms`**: the stream starts where asked. The playlist
+- For HLS, **stream time 0 is item time `start_ms`**: the stream starts where asked, or up to a few
+  seconds before when the video is copied (`remux`): at the keyframe before, with the audio, so
+  that both start together. Use the answer's `start_ms`, not the requested one. The playlist
   is an EVENT playlist that grows as segments are produced (ffmpeg runs faster than real time);
   `#EXT-X-ENDLIST` marks the end. To seek outside the produced range, the client requests a new
   playback with the new `start_ms` (and deletes the old session).

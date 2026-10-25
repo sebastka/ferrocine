@@ -479,6 +479,11 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
         Some(id) => format!("0:i:{id}"),
         None => format!("0:{index}"),
     };
+    if matches!(plan.video, VideoPlan::Copy { .. }) {
+        // Copied video starts at the keyframe before the seek point: start
+        // the audio there too, not exactly at it, so both begin together.
+        a.push("-noaccurate_seek".into());
+    }
     a.extend(crate::media::disc::input_args(s.input, s.start_ms));
     match &plan.video {
         VideoPlan::None => {}
@@ -734,6 +739,29 @@ mod tests {
         r.caps.selects_tracks = true;
         let p = decide_(&media("mp4", "h264", &["aac", "aac"]), &r, 2160);
         assert_eq!(p.method, Method::Direct);
+    }
+
+    #[test]
+    fn copied_video_starts_audio_at_the_same_seek_point() {
+        let p = decide_(&media("mkv", "h264", &["aac"]), &req(), 2160);
+        assert_eq!(p.method, Method::Remux);
+        let spec = CommandSpec {
+            input: Path::new("/m/a.mkv"),
+            start_ms: 100_000,
+            out_dir: Path::new("/tmp/s"),
+            segment_seconds: 4,
+            device: Path::new("/dev/dri/renderD128"),
+            x264_preset: "veryfast",
+            tone_mapper: ToneMapper::Tonemapx,
+            subtitle_palette: None,
+            stream_ids: &Default::default(),
+        };
+        let args = hls_args(&p, Pipeline::Software, &spec).join(" ");
+        assert!(args.contains("-noaccurate_seek -ss 100.000 -i /m/a.mkv"), "{args}");
+        // Encoded video starts exactly where asked.
+        let t = decide_(&media("mkv", "mpeg4", &["aac"]), &req(), 2160);
+        let args = hls_args(&t, Pipeline::Software, &spec).join(" ");
+        assert!(!args.contains("-noaccurate_seek"), "{args}");
     }
 
     #[test]
