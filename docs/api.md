@@ -376,7 +376,8 @@ Answer:
 - `method`:
   - `direct`: `url` is `/api/v1/items/{id}/stream`, the original file with HTTP range support.
     `start_ms` is `0`; the client seeks itself.
-  - `remux`: HLS (fMP4); the video is copied, the audio copied or converted to AAC.
+  - `remux`: HLS (fMP4); the video is copied, the audio copied or converted: to AC-3 5.1 when
+    the source is surround and `audio_codecs` has `ac3`, else to AAC stereo.
   - `transcode`: HLS (fMP4); the video is re-encoded to H.264 (hardware when available).
 - For HLS, **stream time 0 is item time `start_ms`**: the stream starts where asked. The playlist
   is an EVENT playlist that grows as segments are produced (ffmpeg runs faster than real time);

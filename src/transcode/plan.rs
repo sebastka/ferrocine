@@ -79,8 +79,29 @@ pub enum VideoPlan {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioPlan {
     None,
-    Copy { index: i32 },
-    Aac { index: i32 },
+    Copy {
+        index: i32,
+    },
+    /// Converted to AAC stereo.
+    Aac {
+        index: i32,
+    },
+    /// Converted to AC-3 with `channels` (at most 5.1), for clients that
+    /// decode AC-3: surround kept where AAC would make it stereo.
+    Ac3 {
+        index: i32,
+        channels: u32,
+    },
+}
+
+impl AudioPlan {
+    /// The bitrate of converted audio, for the video's share of a limit.
+    fn bitrate(&self) -> u64 {
+        match self {
+            AudioPlan::Ac3 { .. } => AC3_BITRATE,
+            _ => AAC_BITRATE,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,6 +153,8 @@ pub(crate) fn tonemap(mapper: ToneMapper, format: &str) -> String {
 const HLS_VIDEO: [&str; 4] = ["h264", "hevc", "av1", "vp9"];
 const HLS_AUDIO: [&str; 6] = ["aac", "mp3", "ac3", "eac3", "opus", "flac"];
 const AAC_BITRATE: u64 = 192_000;
+/// AC-3's highest rate, which 5.1 needs to sound right.
+const AC3_BITRATE: u64 = 640_000;
 
 fn has(list: &[String], codec: &str) -> bool {
     list.iter().any(|c| c.eq_ignore_ascii_case(codec))
@@ -245,6 +268,12 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
     let audio_plan = match audio {
         None => AudioPlan::None,
         Some(a) if audio_playable && HLS_AUDIO.contains(&a.codec.as_str()) => AudioPlan::Copy { index: a.index },
+        // Surround the client cannot play: AC-3 5.1 when it plays AC-3 (TVs,
+        // receivers), else AAC stereo.
+        Some(a) if a.channels.unwrap_or(2) > 2 && has(&req.caps.audio_codecs, "ac3") => AudioPlan::Ac3 {
+            index: a.index,
+            channels: a.channels.unwrap_or(2).clamp(3, 6) as u32,
+        },
         Some(a) => AudioPlan::Aac { index: a.index },
     };
     let video_plan = match &media.video {
@@ -277,7 +306,7 @@ pub fn decide(media: &MediaInfo, req: &Request, limits: Limits) -> Plan {
                 bitrate = bitrate.min((b as u64).max(1_000_000));
             }
             if let Some(max) = req.max_bitrate {
-                bitrate = bitrate.min(max.saturating_sub(AAC_BITRATE).max(300_000));
+                bitrate = bitrate.min(max.saturating_sub(audio_plan.bitrate()).max(300_000));
             }
             VideoPlan::Encode {
                 index: v.index,
@@ -555,6 +584,16 @@ pub fn hls_args(plan: &Plan, pipeline: Pipeline, s: &CommandSpec<'_>) -> Vec<Str
             "-b:a".into(),
             AAC_BITRATE.to_string(),
         ]),
+        AudioPlan::Ac3 { index, channels } => a.extend([
+            "-map".into(),
+            sel(*index),
+            "-c:a".into(),
+            "ac3".into(),
+            "-ac".into(),
+            channels.to_string(),
+            "-b:a".into(),
+            AC3_BITRATE.to_string(),
+        ]),
     }
     let dir = s.out_dir.to_string_lossy();
     a.extend(
@@ -663,6 +702,29 @@ mod tests {
         let p = decide_(&media("mkv", "h264", &["dts"]), &req(), 2160);
         assert_eq!(p.method, Method::Remux);
         assert_eq!(p.audio, AudioPlan::Aac { index: 1 });
+        // Surround a client cannot play: AC-3 5.1 when it plays AC-3, else AAC stereo.
+        let mut dts = media("mkv", "h264", &["dts"]);
+        dts.audio[0].channels = Some(8);
+        assert_eq!(decide_(&dts, &req(), 2160).audio, AudioPlan::Aac { index: 1 });
+        let mut tv = req();
+        tv.caps.audio_codecs.push("ac3".into());
+        let p = decide_(&dts, &tv, 2160);
+        assert_eq!(p.audio, AudioPlan::Ac3 { index: 1, channels: 6 });
+        let spec = CommandSpec {
+            input: Path::new("/m/a.mkv"),
+            start_ms: 0,
+            out_dir: Path::new("/tmp/s"),
+            segment_seconds: 4,
+            device: Path::new("/dev/dri/renderD128"),
+            x264_preset: "veryfast",
+            tone_mapper: ToneMapper::Tonemapx,
+            subtitle_palette: None,
+            stream_ids: &Default::default(),
+        };
+        let args = hls_args(&p, Pipeline::Software, &spec).join(" ");
+        assert!(args.contains("-c:a ac3 -ac 6 -b:a 640000"), "{args}");
+        dts.audio[0].channels = Some(2);
+        assert_eq!(decide_(&dts, &tv, 2160).audio, AudioPlan::Aac { index: 1 });
         // Second audio track of an MP4: remux to pick it.
         let mut r = req();
         r.audio_index = Some(2);
