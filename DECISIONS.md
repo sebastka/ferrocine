@@ -386,7 +386,9 @@ filesystems could trigger the existing scan.
   served with range requests.
 - **Remux:** the video is playable but the container is not (MKV), or another
   audio track is wanted. The video is copied into fMP4 HLS; the audio is
-  copied when the client plays it, else converted to AAC stereo.
+  copied when the client plays it, else converted: to AC-3 5.1 (640 kb/s)
+  when the source is surround and the client plays AC-3 (TVs, receivers), else
+  to AAC stereo.
 - **Transcode:** anything else, to H.264 High 8-bit, scaled to the limits.
   10-bit H.264 (High 10) always transcodes: no browser decodes it.
 - **The answer** lists the reasons, which the player shows.
