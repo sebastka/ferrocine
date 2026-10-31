@@ -20,7 +20,7 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 flate2 = "1.1.10"
 futures-util = { version = "0.3.34", default-features = false }
-ignore = "0.4.33"
+ignore = "0.4.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always", "tzdb-zoneinfo"] }
 prometheus-client = "0.25.1"
