@@ -123,10 +123,23 @@ pub async fn playback(
         .into_response();
     }
     // Never start at (or past) the very end.
-    let start_ms = match duration {
+    let mut start_ms = match duration {
         Some(d) => req.start_ms.clamp(0, (d - 5_000).max(0)),
         None => req.start_ms.max(0),
     };
+    // Copied video starts at the seek point before (a keyframe); the audio
+    // starts there too (`-noaccurate_seek`), or the stream would open with
+    // video alone, which players line up differently (ExoPlayer put audio
+    // seconds off). Tell the client where the stream really begins.
+    if let plan::VideoPlan::Copy { index, .. } = decision.video
+        && start_ms > 0
+        && !crate::media::disc::is_dvd(&file)
+        && !crate::media::disc::is_title_set(&file)
+        && let Some(k) =
+            crate::media::probe::copy_start(&state.config().transcoding.ffmpeg, &file, index, start_ms).await
+    {
+        start_ms = k;
+    }
     let started = state
         .transcoder
         .start(StartRequest {

@@ -143,7 +143,7 @@ pub fn features(files: Vec<DiscFile>) -> Vec<Feature> {
 
 /// The first part of a DVD title set read whole (a DVD without
 /// `VIDEO_TS.IFO`).
-fn is_title_set(path: &Path) -> bool {
+pub fn is_title_set(path: &Path) -> bool {
     matches!(classify(path), Some(Part::Dvd { part: 1.., .. }))
 }
 

@@ -822,7 +822,10 @@ async fn sign_in_scan_and_play() {
             .await
             .unwrap();
         assert_eq!(p["method"], "remux", "{name}: {p}");
-        assert_eq!(p["start_ms"], 4000);
+        // The copied video starts at the keyframe before: this file's only one is at its start
+        // (0, or a few ms in when the audio's encoder delay starts the file earlier).
+        let start = p["start_ms"].as_i64().unwrap();
+        assert!((0..100).contains(&start), "{name}: {p}");
         play_hls(&admin, &p).await;
         let detail = admin.json(&format!("/api/v1/items/{aid}")).await;
         let embedded = &detail["media"]["subtitles"][0];
