@@ -2,7 +2,7 @@
 
 # Docker Hardened Images, pinned by multi-arch index digest (amd64 + arm64).
 # Renovate keeps the digests (and the syntax directive) up to date.
-FROM dhi.io/rust:1-alpine3.24-dev@sha256:093724ebcbc1af3c7c706e96e73c5d65e5f435477affe92215cc440b44c101b8 AS build
+FROM dhi.io/rust:1-alpine3.24-dev@sha256:77de5f93fcfa37ede037c590c57f6460c976158aea65bc133dd1739d6235e3ed AS build
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -25,13 +25,13 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
 # libva, Vulkan, NVENC and the tone-mapping filters. One image serves every
 # vendor. apt and dpkg are borrowed from the -dev image for this one step and
 # not left in the image; see docker/install-packages.sh.
-FROM dhi.io/debian-base:trixie@sha256:de80b468d8c492508f24b30e529accfaa8c59fe4505ddd72e969b324d276ad21
+FROM dhi.io/debian-base:trixie@sha256:fefc620cea08f18e60c8f1afbf670200463384726b6f31f8d59f8a4707976f81
 
 # renovate: datasource=deb depName=jellyfin-ffmpeg8 registryUrl=https://repo.jellyfin.org/debian?suite=trixie&components=main&binaryArch=amd64
 ARG JELLYFIN_FFMPEG_VERSION=8.1.3-1-trixie
 
 USER 0
-RUN --mount=type=bind,from=dhi.io/debian-base:trixie-dev@sha256:9b025768946856e44f9775005eb199f2e1820484ea27bb5c8bcbb187b80464dc,target=/x \
+RUN --mount=type=bind,from=dhi.io/debian-base:trixie-dev@sha256:9e479c64f8d27f8fa368ef62804c2ddb9b3e43a68c13a200b2f668b4771b049e,target=/x \
     --mount=type=bind,source=docker,target=/docker \
     /x/bin/sh /docker/install-packages.sh "jellyfin-ffmpeg8=$JELLYFIN_FFMPEG_VERSION" \
  && mkdir -p /usr/local/bin /var/lib/ferrocine \
