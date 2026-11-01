@@ -23,7 +23,7 @@ futures-util = { version = "0.3.34", default-features = false }
 ignore = "0.4.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always", "tzdb-zoneinfo"] }
-prometheus-client = "0.25.1"
+prometheus-client = "0.25.2"
 quick-xml = "0.42.0"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 unicode-normalization = "0.1.26"
