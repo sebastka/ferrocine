@@ -25,7 +25,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 jiff = { version = "0.2.46", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always", "tzdb-zoneinfo"] }
 prometheus-client = "0.25.2"
 quick-xml = "0.42.0"
-regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
+regex = { version = "1.13.2", default-features = false, features = ["std", "perf", "unicode"] }
 unicode-normalization = "0.1.26"
 
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "form", "http2", "charset", "query", "stream"] }
@@ -33,7 +33,7 @@ ring = "0.17.14"
 rustix = { version = "1.1.6", features = ["process"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde-saphyr = "2.1.1"
+serde-saphyr = "2.2.0"
 serde_json = "1.0.154"
 serde_path_to_error = "0.1.20"
 sha2 = "0.11.1"
