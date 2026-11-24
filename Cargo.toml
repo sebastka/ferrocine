@@ -17,7 +17,7 @@ doctest = false
 anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "matched-path", "form"] }
 base64 = "0.23.1"
-clap = { version = "4.6.8", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
+clap = { version = "4.6.9", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 flate2 = "1.1.11"
 futures-util = { version = "0.3.34", default-features = false }
 ignore = "0.4.34"
@@ -45,7 +45,7 @@ tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs", "set-header"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
-url = "2.5.8"
+url = "2.5.9"
 walkdir = "2.5.0"
 
 [dev-dependencies]
