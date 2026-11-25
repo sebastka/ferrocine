@@ -46,7 +46,7 @@ tower-http = { version = "0.7.1", default-features = false, features = ["fs", "s
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
 url = "2.5.9"
-walkdir = "2.5.0"
+walkdir = "2.5.1"
 
 [dev-dependencies]
 tokio = { version = "1.54.0", features = ["test-util"] }
